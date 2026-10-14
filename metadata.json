@@ -1,0 +1,6 @@
+{
+  "name": "Lore",
+  "description": "The company memory that knows when your decisions go stale.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
