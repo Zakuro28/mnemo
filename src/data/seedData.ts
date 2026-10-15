@@ -128,6 +128,81 @@ To satisfy SOC2 Type II audit standards and corporate legal retention mandates:
 - Local storage or unmonitored email attachments of contracts are strictly prohibited.
 - Access logs are audited on the 1st of every month.`,
     snippet: 'All executed vendor agreements must be archived in the encrypted Corporate Shared Drive for SOC2 compliance.'
+  },
+  {
+    id: 'D8',
+    title: 'Employee Handbook §4.2: Purchase Approvals',
+    date: '2025-06-01',
+    author: 'Lena Ortiz, HR Director',
+    type: 'policy',
+    content: `Brightwell Logistics Employee Handbook (2025 edition)
+Section 4.2: Purchase Approvals
+Issued by: Human Resources, June 1, 2025
+
+Purchase requests up to $50,000 are approved within 3 business days of submission.
+Managers may plan supplier orders and replacement carriers on this 3-day approval window.
+Requests above $50,000 follow the executive approval process.`,
+    snippet: 'Purchase requests up to $50,000 are approved within 3 business days of submission.'
+  },
+  {
+    id: 'D9',
+    title: 'Finance Procurement Policy FIN-PROC-07',
+    date: '2025-09-15',
+    author: 'Priya Nair, Finance & Legal Lead',
+    type: 'policy',
+    content: `Policy FIN-PROC-07: Purchase Request Review
+Date: September 15, 2025
+Issued by: Finance & Legal Compliance
+
+All purchase requests, regardless of amount, require Finance review before approval.
+The approval window is 5 business days from submission, including the Finance review.
+Teams must not commit spend to a supplier before the 5-day review is complete.`,
+    snippet: 'All purchase requests require Finance review; the approval window is 5 business days.'
+  },
+  {
+    id: 'D10',
+    title: 'Escalation: Replacement Carrier Orders Delayed',
+    date: '2026-08-12',
+    author: 'Daniel Cruz, Ops Director',
+    type: 'email',
+    content: `From: Daniel Cruz <d.cruz@brightwell.com>
+To: Priya Nair <p.nair@brightwell.com>, Lena Ortiz <l.ortiz@brightwell.com>
+Date: August 12, 2026, 08:05 EST
+Subject: Escalation: replacement carrier orders stuck in approval
+
+Priya, Lena,
+Two urgent replacement-carrier orders for the Northern hub sat in approval for 5 business days.
+Ops planned on the 3-day approval window in the Employee Handbook, but Finance applied the 5-day window in FIN-PROC-07.
+Buffer stock at the Northern hub ran out on August 10 while Vendor B shipments were already running late.
+We need one approval rule that everyone follows.`,
+    snippet: 'Two urgent replacement-carrier orders sat in approval for 5 business days; Ops planned on 3 days. Buffer stock ran out.'
+  },
+  {
+    id: 'D11',
+    title: 'Exit Interview: Maria Tan, Procurement Lead',
+    date: '2026-09-20',
+    author: 'Lena Ortiz, HR Director (interviewer)',
+    type: 'interview',
+    content: `Exit Interview Transcript
+Employee: Maria Tan, Procurement Lead (2019-2026)
+Interviewer: Lena Ortiz, HR Director
+Date: September 20, 2026
+
+Q: How did you handle supplier delays?
+A: My rule was to act once a carrier was late for two weeks in a row. I asked the carrier for a written recovery plan within 48 hours, and I tracked it every week at the Monday ops sync.
+
+Q: What did you do with urgent orders during a delay?
+A: I split them. Urgent Tier-1 orders went to our backup carrier, which was Vendor A, even at a higher rate, and bulk orders stayed with the main carrier. That kept customers whole while we fixed the main contract.
+
+Q: How did you evaluate new carriers?
+A: Never sign without a paid trial first. A 90-day trial is how we caught Vendor C's 7% damage rate in 2023.
+
+Q: What should your successor do about Vendor B?
+A: Re-bid the contract. Vendor B won in 2024 on price and speed, so check both against today's numbers. If they no longer hold, the original reason for choosing Vendor B is gone.
+
+Q: Anything you didn't get to?
+A: The approval rules. HR says 3 days and Finance says 5, and that gap has delayed urgent orders. Someone needs to merge them into one rule.`,
+    snippet: 'Act after two weeks of delays: ask for a written recovery plan within 48 hours, split urgent orders to the backup carrier, re-bid Vendor B.'
   }
 ];
 
@@ -254,9 +329,9 @@ export const INITIAL_DECISIONS: Decision[] = [
         text: 'Monday 9:30 AM avoids shift changeover conflicts and enables full dispatch sync',
         status: 'Valid',
         sourceDocId: 'D6',
-        originalReason: 'Morning schedule allows same-day implementation of routing adjustments.',
-        latestEvidence: 'No schedule conflicts logged. 94% department attendance verified across trailing quarters.',
-        lastCheckedDate: '2026-08-15'
+        originalReason: 'Monday 09:30 AM sync sets dispatch quotas and validates carrier availability before shift handovers (D6).',
+        latestEvidence: 'No contradicting evidence in company records since D6 (2025-01-10).',
+        lastCheckedDate: '2026-09-28'
       }
     ],
     options: [
@@ -264,18 +339,6 @@ export const INITIAL_DECISIONS: Decision[] = [
         name: 'Monday 09:30 AM Cadence',
         accepted: true,
         details: 'Weekly cross-department alignment meeting'
-      },
-      {
-        name: 'Daily Standups',
-        accepted: false,
-        details: '15-minute daily meetings',
-        rejectionReason: 'Caused shift interruption during morning warehouse loading spikes.'
-      },
-      {
-        name: 'Friday Retrospectives',
-        accepted: false,
-        details: 'End-of-week review',
-        rejectionReason: 'Too late to fix weekend transit blockages.'
       }
     ],
     sourceDocIds: ['D6']
@@ -303,25 +366,25 @@ export const INITIAL_DECISIONS: Decision[] = [
       {
         id: 'a4',
         decisionId: 'dec-shared-drive',
-        text: 'SOC2 compliance requires centralized immutable access logging on Google Drive',
+        text: 'SOC2 audits require contracts in one encrypted, access-logged drive',
         status: 'Valid',
         sourceDocId: 'D7',
-        originalReason: 'External SOC2 auditors mandate encrypted repository with access history.',
-        latestEvidence: 'SOC2 Type II interim surveillance audit passed with zero vendor documentation findings in July 2026.',
-        lastCheckedDate: '2026-07-15'
+        originalReason: 'SOC2 Type II requires executed agreements in the encrypted Corporate Shared Drive; access logs audited monthly (D7).',
+        latestEvidence: 'No contradicting evidence in company records since D7 (2024-11-05).',
+        lastCheckedDate: '2026-09-28'
       }
     ],
     options: [
       {
         name: 'Encrypted Corporate Shared Drive',
         accepted: true,
-        details: '/Legal/Executed_Agreements with audit logging enabled'
+        details: '/Legal/Executed_Agreements with monthly access-log audits'
       },
       {
-        name: 'Local Department Servers',
+        name: 'Local storage or email attachments',
         accepted: false,
-        details: 'Department-managed network shares',
-        rejectionReason: 'Lacked granular access logging required by SOC2 Type II.'
+        details: 'Contracts kept on local machines or in email',
+        rejectionReason: 'Strictly prohibited by policy D7 (SOC2 Type II).'
       }
     ],
     sourceDocIds: ['D7']

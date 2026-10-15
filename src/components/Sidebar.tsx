@@ -5,7 +5,10 @@ import { useLore, ViewType } from '../context/LoreContext';
 import { MnemoLogo } from './MnemoLogo';
 
 export const Sidebar: React.FC = () => {
-  const { activeView, setActiveView, staleCount, watchCount } = useLore();
+  const { activeView, setActiveView, staleCount, watchCount, conflictScan, conflictActions } = useLore();
+  const openConflicts = conflictScan
+    ? conflictScan.conflicts.filter((c) => !conflictActions[c.id]).length
+    : 0;
 
   const navItems: Array<{
     id: ViewType;
@@ -46,15 +49,15 @@ export const Sidebar: React.FC = () => {
       id: 'conflicts',
       label: 'Conflicts',
       icon: Swords,
-      disabled: true,
-      tag: 'Coming soon'
+      disabled: false,
+      badge: openConflicts > 0 ? `${openConflicts} found` : undefined,
+      badgeColor: 'bg-[#C8553D] text-[#FFFDF2]'
     },
     {
       id: 'experts',
       label: 'Experts',
       icon: UserRound,
-      disabled: true,
-      tag: 'Coming soon'
+      disabled: false
     }
   ];
 

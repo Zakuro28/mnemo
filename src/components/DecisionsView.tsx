@@ -5,7 +5,8 @@ import {
   AlertTriangle, 
   ExternalLink,
   ChevronRight,
-  ShieldAlert
+  ShieldAlert,
+  UserRound
 } from 'lucide-react';
 import { useLore } from '../context/LoreContext';
 import { DecisionStatus } from '../types/lore';
@@ -16,7 +17,8 @@ export const DecisionsView: React.FC = () => {
     selectedDecisionId, 
     setSelectedDecisionId, 
     openSourceByDocId,
-    updateDecisionReviewStatus
+    updateDecisionReviewStatus,
+    askExpert
   } = useLore();
 
   const activeDecision = decisions.find((d) => d.id === selectedDecisionId) || null;
@@ -282,6 +284,13 @@ export const DecisionsView: React.FC = () => {
                     {activeDecision.staleAnalysis.reviewStatus === 'marked_for_review'
                       ? '✓ Marked for review'
                       : 'Review vendor choice'}
+                  </button>
+                  <button
+                    onClick={() => askExpert('What should we do about Vendor B now?')}
+                    className="btn-secondary-teal inline-flex items-center gap-2 px-4 py-2.5 text-[14px] font-medium rounded-xl"
+                  >
+                    <UserRound className="w-4 h-4" strokeWidth={1.75} />
+                    Ask Maria's twin
                   </button>
                   <button
                     onClick={() => updateDecisionReviewStatus(activeDecision.id, 'dismissed')}

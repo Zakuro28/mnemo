@@ -23,6 +23,8 @@ export const SourceSnippetModal: React.FC = () => {
         return 'Operational Memo';
       case 'policy':
         return 'Governance Policy';
+      case 'interview':
+        return 'Exit Interview';
       default:
         return 'Document';
     }

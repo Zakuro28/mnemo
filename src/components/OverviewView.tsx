@@ -5,8 +5,7 @@ import {
   GitBranch, 
   FileText, 
   AlertTriangle, 
-  DollarSign, 
-  Check, 
+  DollarSign,
   ChevronRight, 
   ShieldCheck,
   Activity,
@@ -14,6 +13,7 @@ import {
   FileCheck
 } from 'lucide-react';
 import { useLore } from '../context/LoreContext';
+import { TryDemoGuide } from './TryDemoGuide';
 
 interface OverviewViewProps {
   onAskQuery: (query: string) => void;
@@ -111,8 +111,6 @@ export const OverviewView: React.FC<OverviewViewProps> = ({ onAskQuery }) => {
     setBtnOffset({ x: 0, y: 0 });
   };
 
-  const isStep2Done = uploadedFiles.length > 0 || staleCount > 0;
-  const isStep3Done = staleCount > 0;
 
   const headlineWords = ["Your", "company", "never", "forgets"];
 
@@ -293,100 +291,11 @@ export const OverviewView: React.FC<OverviewViewProps> = ({ onAskQuery }) => {
         </div>
       </div>
 
-      {/* "Try the demo" 3 steps as cards with numbered teal circles */}
-      <div className="space-y-4">
-        <div>
-          <h2 className="font-serif text-[26px] font-normal text-[#12332B]">
-            Try the demo
-          </h2>
-          <p className="text-[14px] text-[#7A8C86] mt-0.5">
-            Three steps to see how Mnemo detects when vendor pricing assumptions go stale.
-          </p>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Step 1 */}
-          <button
-            onClick={() => onAskQuery('Why do we use Vendor B as primary supplier?')}
-            className="mnemo-card p-5 text-left group transition-all duration-150 active:scale-[0.98]"
-          >
-            <div className="flex items-center justify-between mb-3">
-              <span className="w-7 h-7 rounded-full bg-[#3D8D7A] text-white font-bold text-[13px] flex items-center justify-center shadow-xs">
-                1
-              </span>
-              <span className="text-[12px] font-semibold text-[#3D8D7A] group-hover:translate-x-0.5 transition-transform flex items-center gap-1">
-                <span>Ask</span>
-                <ArrowRight className="w-3.5 h-3.5" strokeWidth={2} />
-              </span>
-            </div>
-            <h3 className="font-semibold text-[#12332B] text-[15px] group-hover:text-[#3D8D7A] transition-colors">
-              Why do we use Vendor B?
-            </h3>
-            <p className="text-[13px] text-[#3F5A52] mt-1.5 leading-relaxed">
-              Query the memory to reconstruct the 2024 RFP decision timeline with grounded citations.
-            </p>
-          </button>
-
-          {/* Step 2 */}
-          <button
-            onClick={() => setActiveView('upload')}
-            className="mnemo-card p-5 text-left group transition-all duration-150 active:scale-[0.98]"
-          >
-            <div className="flex items-center justify-between mb-3">
-              <span className={`w-7 h-7 rounded-full font-bold text-[13px] flex items-center justify-center transition-all ${
-                isStep2Done
-                  ? 'bg-[#3D8D7A] text-white shadow-xs'
-                  : 'bg-[#E3F0EC] text-[#2C6B5C]'
-              }`}>
-                {isStep2Done ? <Check className="w-4 h-4 stroke-[2.5]" /> : '2'}
-              </span>
-              <span className="text-[12px] font-semibold text-[#3D8D7A] group-hover:translate-x-0.5 transition-transform flex items-center gap-1">
-                <span>Upload</span>
-                <ArrowRight className="w-3.5 h-3.5" strokeWidth={2} />
-              </span>
-            </div>
-            <h3 className="font-semibold text-[#12332B] text-[15px] group-hover:text-[#3D8D7A] transition-colors">
-              Upload the sample invoice
-            </h3>
-            <p className="text-[13px] text-[#3F5A52] mt-1.5 leading-relaxed">
-              Feed an invoice showing Vendor B at $13.40/unit to trigger automated assumption checking.
-            </p>
-          </button>
-
-          {/* Step 3 */}
-          <button
-            onClick={() => {
-              setActiveView('decisions');
-              setSelectedDecisionId('dec-vendor-b');
-            }}
-            className={`mnemo-card p-5 text-left group transition-all duration-150 active:scale-[0.98] ${
-              isStep3Done ? 'border-[#C8553D]/40 bg-[#FFF8F6]' : ''
-            }`}
-          >
-            <div className="flex items-center justify-between mb-3">
-              <span className={`w-7 h-7 rounded-full font-bold text-[13px] flex items-center justify-center transition-all ${
-                isStep3Done
-                  ? 'bg-[#C8553D] text-white shadow-xs'
-                  : 'bg-[#E3F0EC] text-[#2C6B5C]'
-              }`}>
-                {isStep3Done ? <AlertTriangle className="w-4 h-4 stroke-[2.5]" /> : '3'}
-              </span>
-              <span className={`text-[12px] font-semibold group-hover:translate-x-0.5 transition-transform flex items-center gap-1 ${
-                isStep3Done ? 'text-[#C8553D]' : 'text-[#3D8D7A]'
-              }`}>
-                <span>Inspect</span>
-                <ArrowRight className="w-3.5 h-3.5" strokeWidth={2} />
-              </span>
-            </div>
-            <h3 className="font-semibold text-[#12332B] text-[15px] group-hover:text-[#3D8D7A] transition-colors">
-              See what went stale
-            </h3>
-            <p className="text-[13px] text-[#3F5A52] mt-1.5 leading-relaxed">
-              Inspect the side-by-side math proving Vendor B is now $0.60/unit more expensive than Vendor A.
-            </p>
-          </button>
-        </div>
-      </div>
+      {/* "Try the demo": five steps through one story */}
+      <TryDemoGuide
+        onRunStep1={() => onAskQuery('Why do we use Vendor B as primary supplier?')}
+        onRunStep3={() => setSelectedDecisionId('dec-vendor-b')}
+      />
 
       {/* Two Column Row: Activity Feed Card + Recent Decisions */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

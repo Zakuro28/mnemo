@@ -1,5 +1,12 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { Decision, LoreDocument, StaleAnalysis } from '../types/lore';
+import {
+  ConflictAction,
+  ConflictScanResult,
+  Decision,
+  ExpertMessage,
+  LoreDocument,
+  StaleAnalysis
+} from '../types/lore';
 import { INITIAL_DECISIONS, SEED_DOCUMENTS } from '../data/seedData';
 import { clearAskCache } from '../services/askCache';
 
@@ -20,7 +27,7 @@ export interface ActivityEvent {
 const INITIAL_ACTIVITIES: ActivityEvent[] = [
   {
     id: 'act-1',
-    text: 'Corporate memory index initialized (7 sources indexed)',
+    text: 'Corporate memory index initialized (11 sources indexed)',
     timestamp: '2026-09-02',
     type: 'system'
   },
@@ -68,11 +75,20 @@ interface LoreContextType {
   validCount: number;
   moneyAtRisk: number;
   activityFeed: ActivityEvent[];
+  conflictScan: ConflictScanResult | null;
+  setConflictScan: (scan: ConflictScanResult | null) => void;
+  conflictActions: Record<string, ConflictAction>;
+  setConflictAction: (conflictId: string, action: ConflictAction | null) => void;
+  expertMessages: ExpertMessage[];
+  setExpertMessages: React.Dispatch<React.SetStateAction<ExpertMessage[]>>;
+  pendingExpertQuestion: string;
+  askExpert: (question: string) => void;
+  clearPendingExpertQuestion: () => void;
 }
 
 const LoreContext = createContext<LoreContextType | undefined>(undefined);
 
-const STORAGE_KEY = 'mnemo_brightwell_state_v2';
+const STORAGE_KEY = 'mnemo_brightwell_state_v3';
 
 export const LoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [decisions, setDecisions] = useState<Decision[]>(() => {
@@ -118,6 +134,29 @@ export const LoreProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isStaleHeroActive, setIsStaleHeroActive] = useState<boolean>(false);
   const [heroStaleDecision, setHeroStaleDecision] = useState<Decision | null>(null);
   const [resetKey, setResetKey] = useState<number>(0);
+  const [conflictScan, setConflictScan] = useState<ConflictScanResult | null>(null);
+  const [conflictActions, setConflictActions] = useState<Record<string, ConflictAction>>({});
+  const [expertMessages, setExpertMessages] = useState<ExpertMessage[]>([]);
+  const [pendingExpertQuestion, setPendingExpertQuestion] = useState<string>('');
+
+  const setConflictAction = (conflictId: string, action: ConflictAction | null) => {
+    setConflictActions((prev) => {
+      const next = { ...prev };
+      if (action) {
+        next[conflictId] = action;
+      } else {
+        delete next[conflictId];
+      }
+      return next;
+    });
+  };
+
+  const askExpert = (question: string) => {
+    setPendingExpertQuestion(question);
+    setActiveView('experts');
+  };
+
+  const clearPendingExpertQuestion = () => setPendingExpertQuestion('');
 
   const activeControllersRef = React.useRef<Set<AbortController>>(new Set());
 
@@ -174,6 +213,10 @@ export const LoreProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setHeroStaleDecision(null);
     setSelectedDecisionId(null);
     setSelectedDoc(null);
+    setConflictScan(null);
+    setConflictActions({});
+    setExpertMessages([]);
+    setPendingExpertQuestion('');
     setActiveView('overview');
     setResetKey((prev) => prev + 1);
 
@@ -393,7 +436,16 @@ export const LoreProvider: React.FC<{ children: React.ReactNode }> = ({ children
         watchCount,
         validCount,
         moneyAtRisk,
-        activityFeed
+        activityFeed,
+        conflictScan,
+        setConflictScan,
+        conflictActions,
+        setConflictAction,
+        expertMessages,
+        setExpertMessages,
+        pendingExpertQuestion,
+        askExpert,
+        clearPendingExpertQuestion
       }}
     >
       {children}

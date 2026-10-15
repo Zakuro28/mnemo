@@ -10,7 +10,8 @@ import {
   RefreshCw, 
   ShieldAlert,
   Sparkles,
-  Check
+  Check,
+  UserRound
 } from 'lucide-react';
 import { useLore } from '../context/LoreContext';
 import { SAMPLE_INVOICE_DATA } from '../data/seedData';
@@ -25,7 +26,8 @@ export const UploadView: React.FC = () => {
     updateDecisionReviewStatus,
     addToast,
     resetKey,
-    registerAbortController
+    registerAbortController,
+    askExpert
   } = useLore();
 
   const [isDragging, setIsDragging] = useState(false);
@@ -737,6 +739,13 @@ export const UploadView: React.FC = () => {
                     className="btn-primary-teal px-5 py-2.5 text-white text-[14px] font-semibold rounded-xl transition-all active:scale-[0.97]"
                   >
                     Review vendor choice
+                  </button>
+                  <button
+                    onClick={() => askExpert('What should we do about Vendor B now?')}
+                    className="btn-secondary-teal inline-flex items-center gap-2 px-4 py-2.5 text-[14px] font-medium rounded-xl"
+                  >
+                    <UserRound className="w-4 h-4" strokeWidth={1.75} />
+                    Ask Maria's twin
                   </button>
                   <button
                     onClick={() => updateDecisionReviewStatus('dec-vendor-b', 'dismissed')}

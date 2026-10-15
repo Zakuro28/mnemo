@@ -575,6 +575,15 @@ export const AskLoreView: React.FC<AskLoreViewProps> = ({ initialQuery = '' }) =
                       Streaming timeline...
                     </span>
                   )}
+                  {!isLoading && response?.servedFrom === 'memory' && (
+                    <span
+                      title="Gemini is busy, so this verified answer was served from Mnemo's memory."
+                      className="inline-flex items-center gap-1.5 text-[12px] font-medium text-[#3F5A52] bg-[#F7FAF9] border border-[#E3EAE7] px-2.5 py-1 rounded-full"
+                    >
+                      <FileText className="w-3 h-3 text-[#3D8D7A]" strokeWidth={1.75} />
+                      Verified memory
+                    </span>
+                  )}
                 </div>
                 {displaySummary && (
                   <p className="text-[#3F5A52] text-[15px] mt-1.5 leading-relaxed">

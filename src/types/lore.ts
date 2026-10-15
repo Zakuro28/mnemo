@@ -6,7 +6,7 @@ export interface LoreDocument {
   title: string;
   date: string;
   author: string;
-  type: 'email' | 'meeting_notes' | 'report' | 'quote' | 'invoice' | 'memo' | 'policy';
+  type: 'email' | 'meeting_notes' | 'report' | 'quote' | 'invoice' | 'memo' | 'policy' | 'interview';
   content: string;
   snippet: string;
 }
@@ -97,6 +97,44 @@ export interface AskLoreResponse {
   summary?: string;
   triedBefore?: TriedBeforeAlert | null;
   timeline?: TimelineStep[];
+  servedFrom?: 'memory';
+}
+
+export interface PolicySide {
+  docId: string;
+  docTitle: string;
+  owner: string;
+  quote: string;
+}
+
+export interface PolicyConflict {
+  id: string;
+  topic: string;
+  risk: ConfidenceLevel;
+  confidence: ConfidenceLevel;
+  sideA: PolicySide;
+  sideB: PolicySide;
+  impact: string;
+  impactDocId?: string;
+  suggestedFix: string;
+}
+
+export interface ConflictScanResult {
+  conflicts: PolicyConflict[];
+  servedFrom?: 'memory';
+}
+
+export type ConflictAction = 'sent' | 'dismissed';
+
+export interface ExpertMessage {
+  id: string;
+  role: 'user' | 'expert';
+  text: string;
+  covered?: boolean;
+  citations?: TimelineCitation[];
+  servedFrom?: 'memory';
+  error?: boolean;
+  retryQuestion?: string;
 }
 
 export interface AssumptionCheckFinding {
