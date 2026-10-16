@@ -14,10 +14,16 @@ import { ToastContainer } from './components/ToastContainer';
 const MainContent: React.FC = () => {
   const { activeView, setActiveView, resetKey } = useLore();
   const [promptToRun, setPromptToRun] = useState<string>('');
+  const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
 
   React.useEffect(() => {
     setPromptToRun('');
   }, [resetKey]);
+
+  // The phone menu closes whenever the page changes
+  React.useEffect(() => {
+    setIsMobileNavOpen(false);
+  }, [activeView]);
 
   React.useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -39,16 +45,16 @@ const MainContent: React.FC = () => {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#F7FAF9] font-sans text-[#3F5A52] antialiased relative">
-      {/* Fixed Sidebar */}
-      <Sidebar />
+      {/* Sidebar: fixed on desktop, slide-in drawer on phones */}
+      <Sidebar mobileOpen={isMobileNavOpen} onClose={() => setIsMobileNavOpen(false)} />
 
       {/* Main Viewport */}
       <div className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative z-10">
         {/* Top Navigation Bar */}
-        <Header />
+        <Header onOpenMenu={() => setIsMobileNavOpen(true)} />
 
-        {/* Scrollable Workspace with 48px page padding */}
-        <main className="flex-1 overflow-y-auto px-12 py-12">
+        {/* Scrollable workspace: roomy on desktop, tighter on phones */}
+        <main className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-6 sm:px-8 sm:py-10 lg:px-12 lg:py-12">
           <div className="max-w-5xl mx-auto space-y-8">
             {/* Active View Router */}
             {activeView === 'overview' && (

@@ -8,31 +8,36 @@ import {
   MinusCircle, 
   AlertTriangle, 
   RefreshCw, 
-  ShieldAlert,
   Sparkles,
   Check,
-  UserRound
+  Building2
 } from 'lucide-react';
 import { useLore } from '../context/LoreContext';
-import { SAMPLE_INVOICE_DATA } from '../data/seedData';
-import { AssumptionCheckFinding } from '../types/lore';
+import { SAMPLE_INVOICE_DATA, SAMPLE_LEASE_NOTICE } from '../data/seedData';
+import { CheckAssumptionsResponse } from '../types/lore';
+import { StaleEvidenceCard } from './StaleEvidenceCard';
+
+interface UploadedFileData {
+  mimeType: string;
+  data: string;
+}
+
+const MAX_UPLOAD_BYTES = 6 * 1024 * 1024;
 
 export const UploadView: React.FC = () => {
   const { 
-    decisions, 
-    uploadedFiles, 
-    applyAssumptionExpiry, 
-    openSourceByDocId,
-    updateDecisionReviewStatus,
+    decisions,
+    documents,
+    uploadedFiles,
+    applyAssumptionExpiry,
     addToast,
     resetKey,
-    registerAbortController,
-    askExpert
+    registerAbortController
   } = useLore();
 
   const [isDragging, setIsDragging] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [currentFile, setCurrentFile] = useState<{ name: string; content: string } | null>(null);
+  const [currentFile, setCurrentFile] = useState<{ name: string; content: string; fileData?: UploadedFileData } | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isTimedOut, setIsTimedOut] = useState(false);
 
@@ -44,7 +49,7 @@ export const UploadView: React.FC = () => {
   const [animationPhase, setAnimationPhase] = useState<number>(0);
   const [checkedAssumptionIds, setCheckedAssumptionIds] = useState<{ [id: string]: 'contradicted' | 'supported' | 'unrelated' }>({});
   const [displayCost, setDisplayCost] = useState<number>(0);
-  const [analysisResult, setAnalysisResult] = useState<any>(null);
+  const [analysisResult, setAnalysisResult] = useState<CheckAssumptionsResponse | null>(null);
   const [decisionChipStatus, setDecisionChipStatus] = useState<'Valid' | 'Watch' | 'Stale'>('Valid');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -72,8 +77,8 @@ export const UploadView: React.FC = () => {
   const totalAssumptionsCount = decisions.flatMap((d) => d.assumptions).length || 4;
 
   const AUDIT_STEPS = [
-    'Reading invoice...',
-    'Extracting prices and dates...',
+    'Reading the document...',
+    'Extracting facts and figures...',
     `Checking ${totalAssumptionsCount} assumptions...`,
     'Comparing with past decisions...'
   ];
@@ -105,7 +110,7 @@ export const UploadView: React.FC = () => {
   // Animate count-up for cost
   useEffect(() => {
     if (animationPhase >= 4) {
-      const targetCost = 4800;
+      const targetCost = analysisResult?.monthlyImpact || 0;
       const duration = 800;
       const steps = 30;
       const stepDuration = duration / steps;
@@ -127,49 +132,47 @@ export const UploadView: React.FC = () => {
     }
   }, [animationPhase]);
 
-  const runHeroAnimation = (findings: AssumptionCheckFinding[], fileName: string, monthlyImpact: number) => {
-    setAnimationPhase(1); // scanning line sweeps down on invoice
+  const runHeroAnimation = (result: CheckAssumptionsResponse, uploadedText: string) => {
+    const findings = result.findings || [];
+    setAnimationPhase(1); // scanning line sweeps down on the document
     setCheckedAssumptionIds({});
     setDecisionChipStatus('Valid');
     setDisplayCost(0);
 
-    // Step 2: Assumption check rows fill in with staggered checks (450ms in)
+    // Step 2: assumption rows fill in one by one
     setTimeout(() => {
       setAnimationPhase(2);
-
       const allAssumptions = decisions.flatMap((d) => d.assumptions);
       allAssumptions.forEach((assump, idx) => {
         setTimeout(() => {
           const finding = findings.find((f) => f.assumptionId === assump.id);
-          const verdict = finding ? finding.verdict : 'unrelated';
           setCheckedAssumptionIds((prev) => ({
             ...prev,
-            [assump.id]: verdict
+            [assump.id]: finding ? finding.verdict : 'unrelated'
           }));
         }, idx * 120);
       });
     }, 450);
 
-    // Step 3: Decision chip transitions to Stale with pulse ring (1100ms in)
+    // Step 3: the affected decision chip turns Stale
     setTimeout(() => {
       setAnimationPhase(3);
       setDecisionChipStatus('Stale');
     }, 1100);
 
-    // Step 4: Side-by-side card slides in & cost count-up plays (1500ms in)
+    // Step 4: evidence card slides in and the cost counts up
     setTimeout(() => {
       setAnimationPhase(4);
       setIsAnalyzing(false);
-
-      applyAssumptionExpiry(findings, monthlyImpact, fileName);
+      applyAssumptionExpiry(result, uploadedText);
     }, 1500);
   };
 
-  const handleProcessFile = async (name: string, content: string) => {
+  const handleProcessFile = async (name: string, content: string, fileData?: UploadedFileData) => {
     setErrorMessage(null);
     setIsTimedOut(false);
 
-    if (!content || !content.trim()) {
+    if (!fileData && (!content || !content.trim())) {
       setErrorMessage('The file appears to be empty or unreadable.');
       return;
     }
@@ -179,16 +182,17 @@ export const UploadView: React.FC = () => {
       addToast({
         type: 'warning',
         title: 'Already checked',
-        description: `"${name}" was previously analyzed.`
+        description: `"${name}" was previously analyzed. Use Reset Demo to check it again.`
       });
       return;
     }
 
-    setCurrentFile({ name, content });
+    setCurrentFile({ name, content, fileData });
+    setAnalysisResult(null);
     setIsAnalyzing(true);
-    setAnimationPhase(1); // Start showing the document card immediately
+    setAnimationPhase(1); // show the document card immediately
 
-    // Send ONLY what the check needs: id, text, decisionTitle
+    // Each assumption is sent with the decision it belongs to
     const activeAssumptions = decisions.flatMap((d) =>
       d.assumptions.map((a) => ({
         id: a.id,
@@ -196,14 +200,15 @@ export const UploadView: React.FC = () => {
         decisionTitle: d.title
       }))
     );
+    // Company records give Gemini the latest facts to compare against (e.g. competitor quotes)
+    const records = documents.map((d) => ({ id: d.id, title: d.title, date: d.date, content: d.content }));
 
-    // 20-second timeout
     const controller = new AbortController();
     abortControllerRef.current = controller;
     const unregister = registerAbortController(controller);
     const timeoutTimer = setTimeout(() => {
       controller.abort();
-    }, 20000);
+    }, fileData ? 45000 : 25000);
 
     try {
       const res = await fetch('/api/check-assumptions', {
@@ -213,29 +218,31 @@ export const UploadView: React.FC = () => {
         body: JSON.stringify({
           content,
           fileName: name,
-          activeAssumptions
+          fileData,
+          activeAssumptions,
+          documents: records
         })
       });
 
       clearTimeout(timeoutTimer);
+      const data: CheckAssumptionsResponse = await res.json().catch(() => ({} as CheckAssumptionsResponse));
 
       if (!res.ok) {
-        throw new Error('Analysis request failed');
+        throw new Error(data.message || 'Analysis request failed');
       }
 
-      const data = await res.json();
       setAnalysisResult(data);
-
-      const hasContradiction = data.findings?.some((f: any) => f.verdict === 'contradicted');
+      const hasContradiction = data.findings?.some((f) => f.verdict === 'contradicted');
 
       if (hasContradiction) {
-        runHeroAnimation(data.findings, name, data.monthlyImpact || 4800);
+        runHeroAnimation(data, content);
       } else {
         setIsAnalyzing(false);
         setAnimationPhase(0);
+        applyAssumptionExpiry(data, content);
         addToast({
-          type: 'info',
-          title: 'Audit Complete',
+          type: 'success',
+          title: 'Audit complete',
           description: 'No decisions affected. All assumptions still hold.'
         });
       }
@@ -249,7 +256,9 @@ export const UploadView: React.FC = () => {
         setIsTimedOut(true);
         setErrorMessage('This is taking longer than usual — Retry');
       } else {
-        setErrorMessage('Something went wrong analyzing the document. Please retry.');
+        setErrorMessage(err?.message && err.message !== 'Analysis request failed'
+          ? err.message
+          : 'Something went wrong analyzing the document. Please retry.');
       }
     } finally {
       unregister();
@@ -257,8 +266,11 @@ export const UploadView: React.FC = () => {
   };
 
   const handleUseSampleInvoice = () => {
-    // Send plain text representation for maximum speed
     handleProcessFile(SAMPLE_INVOICE_DATA.fileName, SAMPLE_INVOICE_DATA.textRepresentation);
+  };
+
+  const handleUseLeaseNotice = () => {
+    handleProcessFile(SAMPLE_LEASE_NOTICE.fileName, SAMPLE_LEASE_NOTICE.textRepresentation);
   };
 
   const handleFileDrop = (e: React.DragEvent) => {
@@ -268,25 +280,51 @@ export const UploadView: React.FC = () => {
     if (isAnalyzing) return;
 
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const file = e.dataTransfer.files[0];
-      readFile(file);
+      readFile(e.dataTransfer.files[0]);
     }
   };
 
+  // PDFs and images go to Gemini as files; text formats are read as text
   const readFile = (file: File) => {
+    const isBinary = file.type === 'application/pdf' || file.type.startsWith('image/') || /\.pdf$/i.test(file.name);
+
+    if (isBinary && file.size > MAX_UPLOAD_BYTES) {
+      setErrorMessage('That file is larger than 6 MB. Please upload a smaller file.');
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = (event) => {
-      const text = event.target?.result as string;
-      handleProcessFile(file.name, text);
+      const result = event.target?.result as string;
+      if (isBinary) {
+        const data = result.slice(result.indexOf(',') + 1);
+        const mimeType = file.type || 'application/pdf';
+        handleProcessFile(file.name, '', { mimeType, data });
+      } else {
+        handleProcessFile(file.name, result);
+      }
     };
     reader.onerror = () => {
       setErrorMessage('Could not read the uploaded file.');
     };
-    reader.readAsText(file);
+    if (isBinary) {
+      reader.readAsDataURL(file);
+    } else {
+      reader.readAsText(file);
+    }
   };
 
-  const vendorBDecision = decisions.find((d) => d.id === 'dec-vendor-b');
+  const isDemoInvoice = currentFile?.name === SAMPLE_INVOICE_DATA.fileName;
+  const staleForFile = decisions.filter(
+    (d) => d.status === 'Stale' && d.staleAnalysis?.newSourceTitle === currentFile?.name
+  );
+  const contradictedDecisionTitles = analysisResult
+    ? decisions
+        .filter((d) => d.assumptions.some((a) => analysisResult.findings?.some((f) => f.assumptionId === a.id && f.verdict === 'contradicted')))
+        .map((d) => d.title)
+    : [];
   const allAssumptions = decisions.flatMap((d) => d.assumptions);
+  const hasHubDecision = decisions.some((d) => /hub north/i.test(d.title));
 
   return (
     <div className="space-y-8 pb-16 animate-page-enter">
@@ -296,7 +334,7 @@ export const UploadView: React.FC = () => {
           Upload & Audit
         </h1>
         <p className="text-[#3F5A52] text-[16px] leading-relaxed max-w-3xl mt-2">
-          Drop in recent invoices or rate cards. Mnemo automatically verifies new evidence against active company assumptions.
+          Drop in any new document: an invoice, a quote, a lease, a report. Gemini checks it against every assumption your decisions depend on.
         </p>
       </div>
 
@@ -432,6 +470,23 @@ export const UploadView: React.FC = () => {
             Vendor B INV-2026-0912 ($13.40/unit)
           </span>
         </div>
+
+        {/* Second sample: proves a decision captured on the Decisions page stale */}
+        <div className="w-full pt-4 mt-2 border-t border-[#E3EAE7] flex flex-col sm:flex-row items-center justify-center gap-3">
+          <button
+            onClick={handleUseLeaseNotice}
+            disabled={isAnalyzing}
+            className="btn-secondary-teal inline-flex items-center gap-2 px-5 py-2 text-[13px] font-semibold rounded-xl disabled:opacity-60 disabled:cursor-wait"
+          >
+            <Building2 className="w-4 h-4" strokeWidth={1.75} />
+            Use sample lease notice
+          </button>
+          <span className="text-[13px] text-[#7A8C86] text-center sm:text-left">
+            {hasHubDecision
+              ? 'Checks the Hub North decision you captured.'
+              : 'Tip: capture the Hub North example on the Decisions page first, then try this.'}
+          </span>
+        </div>
       </div>
 
       {/* Friendly Timeout / Error Card: Never a frozen screen */}
@@ -455,7 +510,7 @@ export const UploadView: React.FC = () => {
           <button
             onClick={() => {
               if (currentFile) {
-                handleProcessFile(currentFile.name, currentFile.content);
+                handleProcessFile(currentFile.name, currentFile.content, currentFile.fileData);
               } else {
                 handleUseSampleInvoice();
               }
@@ -500,7 +555,11 @@ export const UploadView: React.FC = () => {
                     {currentFile?.name || SAMPLE_INVOICE_DATA.fileName}
                   </h4>
                   <p className="text-[13px] text-[#7A8C86]">
-                    Evaluating against corporate assumptions in memory...
+                    {isAnalyzing
+                      ? currentFile?.fileData
+                        ? 'Gemini is reading the file and checking it against company memory...'
+                        : 'Checking against company memory...'
+                      : 'Checked against company memory'}
                   </p>
                 </div>
               </div>
@@ -519,12 +578,17 @@ export const UploadView: React.FC = () => {
                       decisionChipStatus === 'Stale' ? 'bg-[#C8553D]' : 'bg-[#3D8D7A]'
                     }`}
                   />
-                  <span>Use Vendor B as primary supplier: {decisionChipStatus}</span>
+                  <span className="max-w-[340px] truncate">
+                    {decisionChipStatus === 'Stale' && contradictedDecisionTitles.length > 0
+                      ? `${contradictedDecisionTitles.join(', ')}: Stale`
+                      : `Checking ${allAssumptions.length} assumptions`}
+                  </span>
                 </span>
               </div>
             </div>
 
-            {/* Clean Mini-Invoice Card */}
+            {/* Demo invoice gets a structured view; any other document shows what Gemini read */}
+            {isDemoInvoice ? (
             <div className="mt-4 p-4 bg-[#F7FAF9] border border-[#E3EAE7] rounded-xl grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4 text-[13px] shadow-xs">
               <div>
                 <span className="text-[11px] uppercase tracking-wider text-[#7A8C86] block font-semibold">Vendor</span>
@@ -553,6 +617,19 @@ export const UploadView: React.FC = () => {
                 <span className="font-semibold text-[#12332B] block mt-0.5">$107,200.00</span>
               </div>
             </div>
+            ) : (
+              <div className="mt-4 p-4 bg-[#F7FAF9] border border-[#E3EAE7] rounded-xl text-[14px] shadow-xs">
+                <span className="text-[11px] uppercase tracking-wider text-[#7A8C86] block font-semibold mb-1">What Gemini read</span>
+                {analysisResult?.documentSummary ? (
+                  <p className="text-[#12332B] leading-relaxed">{analysisResult.documentSummary}</p>
+                ) : (
+                  <div className="space-y-2 pt-1">
+                    <div className="h-3.5 bg-[#E3F0EC] rounded w-5/6 animate-skeleton-pulse" />
+                    <div className="h-3.5 bg-[#E3F0EC] rounded w-2/3 animate-skeleton-pulse" />
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Assumption Verification Rows (Skeleton shimmer while waiting, fills in upon results) */}
@@ -620,143 +697,10 @@ export const UploadView: React.FC = () => {
             </div>
           </div>
 
-          {/* Phase 4: Stale Result Card with BOTH sources, comparison, and math */}
-          {animationPhase >= 4 && vendorBDecision && (
-            <div className="mnemo-card p-6 md:p-8 border-l-4 border-l-[#C8553D] bg-[#FFF8F6] space-y-6 shadow-[0_8px_32px_rgba(200,85,61,0.08)] stale-card-shimmer">
-              {/* Header */}
-              <div className="relative z-10 flex items-center justify-between pb-4 border-b border-[#C8553D]/20">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-[#C8553D]/15 text-[#C8553D] flex items-center justify-center">
-                    <ShieldAlert className="w-5 h-5" strokeWidth={1.75} />
-                  </div>
-                  <div>
-                    <h3 className="text-[18px] font-semibold text-[#12332B]">
-                      Decision Stale: Use Vendor B as primary supplier
-                    </h3>
-                  </div>
-                </div>
-
-                <span className="px-3 py-1 rounded-full bg-white text-[#C8553D] border border-[#C8553D]/30 text-[13px] font-bold shadow-xs">
-                  Confidence: High
-                </span>
-              </div>
-
-              {/* Two columns with vertical divider */}
-              <div className="relative z-10 grid grid-cols-1 md:grid-cols-2 gap-8 relative">
-                {/* Vertical Divider in Desktop */}
-                <div className="hidden md:block absolute top-0 bottom-0 left-1/2 -ml-px w-px bg-[#E3EAE7]" />
-
-                {/* Left Column: Original Reason */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between text-[13px]">
-                    <span className="font-semibold text-[#7A8C86]">
-                      Original reason · 2024
-                    </span>
-                    <button
-                      onClick={() => openSourceByDocId('D2')}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white border border-[#E3EAE7] text-[12px] font-semibold text-[#3D8D7A] hover:bg-[#E3F0EC] transition-colors shadow-xs"
-                    >
-                      <FileText className="w-3.5 h-3.5 text-[#3D8D7A]" strokeWidth={1.75} />
-                      <span>Doc D2 (2024-03-12)</span>
-                    </button>
-                  </div>
-                  <div className="bg-[#F7FAF9] p-4 rounded-xl text-[14px] text-[#3F5A52] leading-relaxed italic border border-[#E3EAE7]">
-                    "Vendor selection meeting. Options: Vendor A ($12.50/unit, 4-day), Vendor B ($10.00/unit, 2-day), Vendor C (rejected, see D1). Decision: choose Vendor B. Reasons: 20% cheaper, 2-day delivery."
-                  </div>
-                </div>
-
-                {/* Right Column: New Evidence showing BOTH sources */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between text-[13px]">
-                    <span className="font-semibold text-[#C8553D]">
-                      New evidence · 2026
-                    </span>
-                    <span className="text-[12px] text-[#7A8C86]">2 verified sources</span>
-                  </div>
-
-                  <div className="space-y-2.5">
-                    {/* Source 1: Vendor B invoice */}
-                    <div className="bg-white p-3.5 rounded-xl space-y-1 border border-[#E3EAE7] shadow-xs">
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-[13px] text-[#12332B]">Vendor B invoice INV-2026-0912</span>
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#F7FAF9] text-[11px] font-mono text-[#7A8C86] border border-[#E3EAE7]">
-                          2026-09-28
-                        </span>
-                      </div>
-                      <p className="text-[13px] text-[#3F5A52]">
-                        8,000 units at <span className="font-bold text-[#C8553D]">$13.40 / unit</span> (total $107,200.00)
-                      </p>
-                    </div>
-
-                    {/* Source 2: Vendor A quote D5 */}
-                    <div className="bg-white p-3.5 rounded-xl space-y-1 border border-[#E3EAE7] shadow-xs">
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-[13px] text-[#12332B]">Vendor A quote (Doc D5)</span>
-                        <button
-                          onClick={() => openSourceByDocId('D5')}
-                          className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#E3F0EC] text-[11px] font-semibold text-[#2C6B5C] border border-[#3D8D7A]/30 hover:bg-[#3D8D7A] hover:text-white transition-colors"
-                        >
-                          <FileText className="w-3 h-3 text-[#3D8D7A]" strokeWidth={1.75} />
-                          <span>Doc D5 (2026-09-02)</span>
-                        </button>
-                      </div>
-                      <p className="text-[13px] text-[#3F5A52]">
-                        Quote from Vendor A: <span className="font-semibold text-[#3D8D7A]">$12.80/unit</span>, 3-day delivery
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* One-line comparison */}
-                  <div className="p-2.5 rounded-lg bg-[#C8553D]/10 border border-[#C8553D]/20">
-                    <p className="text-[13px] font-semibold text-[#C8553D]">
-                      Vendor B is now $0.60/unit MORE expensive than Vendor A.
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Bottom: Cost in big Instrument Serif 64px terracotta + Math + Mark for review / Dismiss */}
-              <div className="relative z-10 pt-6 border-t border-[#C8553D]/20 flex flex-col md:flex-row md:items-center justify-between gap-6">
-                <div>
-                  <span className="text-[13px] text-[#7A8C86] block font-medium">
-                    Estimated cost of keeping this decision
-                  </span>
-                  <div className="flex items-baseline gap-2 mt-1">
-                    <span className="font-serif text-[64px] text-[#C8553D] font-normal leading-none tabular-nums">
-                      ${displayCost.toLocaleString()}
-                    </span>
-                    <span className="font-sans text-[18px] text-[#3F5A52]">/ month</span>
-                  </div>
-                  {/* Math in small muted text */}
-                  <p className="text-[12px] text-[#7A8C86] mt-1 font-mono">
-                    ($13.40 − $12.80) × 8,000 units/month
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => updateDecisionReviewStatus('dec-vendor-b', 'marked_for_review')}
-                    className="btn-primary-teal px-5 py-2.5 text-white text-[14px] font-semibold rounded-xl transition-all active:scale-[0.97]"
-                  >
-                    Review vendor choice
-                  </button>
-                  <button
-                    onClick={() => askExpert('What should we do about Vendor B now?')}
-                    className="btn-secondary-teal inline-flex items-center gap-2 px-4 py-2.5 text-[14px] font-medium rounded-xl"
-                  >
-                    <UserRound className="w-4 h-4" strokeWidth={1.75} />
-                    Ask Maria's twin
-                  </button>
-                  <button
-                    onClick={() => updateDecisionReviewStatus('dec-vendor-b', 'dismissed')}
-                    className="btn-secondary-teal px-4 py-2.5 text-[14px] font-medium rounded-xl transition-all active:scale-[0.97]"
-                  >
-                    Dismiss
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
+          {/* Phase 4: one evidence card per decision this document made stale */}
+          {animationPhase >= 4 && staleForFile.map((decision, idx) => (
+            <StaleEvidenceCard key={decision.id} decision={decision} displayCost={idx === 0 ? displayCost : undefined} />
+          ))}
         </div>
       )}
     </div>

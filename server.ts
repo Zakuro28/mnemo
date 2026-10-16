@@ -5,6 +5,8 @@ import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
+import { getApps, initializeApp } from 'firebase-admin/app';
+import { FieldValue, getFirestore, type Firestore } from 'firebase-admin/firestore';
 
 dotenv.config();
 
@@ -43,11 +45,76 @@ function hashKey(...parts: string[]): string {
   return createHash('sha256').update(parts.join('|')).digest('hex');
 }
 
+// Firestore (through the Firebase Admin SDK) keeps the answer cache shared across Cloud Run
+// instances and restarts, and stores each workspace's captured decisions and audits.
+// On Cloud Run the SDK authenticates with the service's own identity; if Firestore is not
+// reachable, everything keeps working from memory.
+const FIRESTORE_OP_TIMEOUT_MS = 2500;
+const FIRESTORE_RETRY_AFTER_MS = 5 * 60_000;
+let db: Firestore | null = null;
+let firestoreStatus = 'not configured';
+let firestoreFailures = 0;
+let firestoreDisabledUntil = 0;
+
+try {
+  // The Firestore database lives in the "mnemo-memory" Firebase project; Cloud Run's identity
+  // has been granted access to it (Cloud Datastore User)
+  const projectId = process.env.FIREBASE_PROJECT_ID || 'mnemo-memory';
+  if (process.env.K_SERVICE || process.env.FIREBASE_PROJECT_ID) {
+    const app = getApps()[0] || initializeApp({ projectId });
+    db = getFirestore(app);
+    db.settings({ ignoreUndefinedProperties: true });
+    firestoreStatus = 'ready';
+  }
+} catch (err: any) {
+  firestoreStatus = `unavailable: ${err?.message || err}`;
+}
+
+async function firestoreOp<T>(op: (store: Firestore) => Promise<T>): Promise<T | null> {
+  if (!db || Date.now() < firestoreDisabledUntil) return null;
+  try {
+    const result = await Promise.race([
+      op(db),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Firestore timed out')), FIRESTORE_OP_TIMEOUT_MS))
+    ]);
+    firestoreFailures = 0;
+    firestoreStatus = 'connected';
+    return result;
+  } catch (err: any) {
+    firestoreFailures += 1;
+    firestoreStatus = `error: ${String(err?.message || err).slice(0, 160)}`;
+    console.warn('Firestore operation failed:', err?.message || err);
+    // After repeated failures, stop waiting on Firestore for a while so requests stay fast
+    if (firestoreFailures >= 3) {
+      firestoreDisabledUntil = Date.now() + FIRESTORE_RETRY_AFTER_MS;
+      firestoreFailures = 0;
+    }
+    return null;
+  }
+}
+
 function rememberAnswer(key: string, value: any) {
   if (answerCache.size >= ANSWER_CACHE_LIMIT) {
     answerCache.delete(answerCache.keys().next().value as string);
   }
   answerCache.set(key, value);
+  void firestoreOp((store) =>
+    store.collection('answerCache').doc(key).set({ value: JSON.stringify(value), createdAt: FieldValue.serverTimestamp() })
+  );
+}
+
+async function getCachedAnswer(key: string): Promise<any> {
+  if (answerCache.has(key)) return answerCache.get(key);
+  const snap = await firestoreOp((store) => store.collection('answerCache').doc(key).get());
+  const raw = snap?.exists ? snap.get('value') : null;
+  if (typeof raw !== 'string') return undefined;
+  try {
+    const value = JSON.parse(raw);
+    answerCache.set(key, value);
+    return value;
+  } catch {
+    return undefined;
+  }
 }
 
 function isQuotaError(err: any): boolean {
@@ -118,7 +185,11 @@ function askCacheKey(query: string, documents: any[]): string {
 }
 
 // Health check endpoint
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
+  // Verify Firestore with a real write the first time, so the status is never just assumed
+  if (firestoreStatus === 'ready') {
+    await firestoreOp((store) => store.collection('meta').doc('health').set({ checkedAt: FieldValue.serverTimestamp() }, { merge: true }));
+  }
   res.json({
     status: 'ok',
     hasApiKey: Boolean(apiKey),
@@ -126,7 +197,50 @@ app.get('/api/health', (req, res) => {
     available: availableModels(),
     geminiPaused: isGeminiPaused(),
     cachedAnswers: answerCache.size,
+    firestore: firestoreStatus,
     timestamp: new Date().toISOString()
+  });
+});
+
+// WORKSPACE MEMORY (FIRESTORE): each browser gets an anonymous workspace, so visitors never see each other's data
+const WORKSPACE_ID = /^[a-zA-Z0-9-]{8,64}$/;
+const WORKSPACE_EVENT_TYPES = new Set([
+  'decision_captured',
+  'document_audited',
+  'conflicts_scanned',
+  'conflict_sent',
+  'review_requested',
+  'demo_reset'
+]);
+
+app.post('/api/workspace/:id/events', async (req, res) => {
+  const id = req.params.id;
+  const { type, payload } = req.body || {};
+  if (!WORKSPACE_ID.test(id)) return res.status(400).json({ error: 'Invalid workspace id.' });
+  if (!WORKSPACE_EVENT_TYPES.has(type)) return res.status(400).json({ error: 'Unknown event type.' });
+  const json = JSON.stringify(payload ?? {});
+  if (json.length > 200_000) return res.status(413).json({ error: 'Event is too large.' });
+
+  const saved = await firestoreOp(async (store) => {
+    const workspace = store.collection('workspaces').doc(id);
+    await workspace.set({ lastActiveAt: FieldValue.serverTimestamp(), eventCount: FieldValue.increment(1) }, { merge: true });
+    await workspace.collection('events').add({ type, payload: json, createdAt: FieldValue.serverTimestamp() });
+    return true;
+  });
+  return res.json({ saved: Boolean(saved), firestore: firestoreStatus });
+});
+
+app.get('/api/workspace/:id', async (req, res) => {
+  const id = req.params.id;
+  if (!WORKSPACE_ID.test(id)) return res.status(400).json({ error: 'Invalid workspace id.' });
+  const snap = await firestoreOp((store) =>
+    store.collection('workspaces').doc(id).collection('events').orderBy('createdAt', 'desc').limit(20).get()
+  );
+  if (!snap) return res.json({ available: false, firestore: firestoreStatus, events: [] });
+  return res.json({
+    available: true,
+    firestore: firestoreStatus,
+    events: snap.docs.map((d) => ({ type: d.get('type'), createdAt: d.get('createdAt')?.toDate?.()?.toISOString?.() || null }))
   });
 });
 
@@ -404,7 +518,7 @@ const ASK_MNEMO_SCHEMA = {
   required: ['found']
 };
 
-function buildAskMnemoPrompt(query: string, documents: any[]): string {
+function buildAskMnemoPrompt(query: string, documents: any[], decisionTitles: string[] = []): string {
   const docContext = (documents || [])
     .map((d: any) => `[Doc ${d.id}] "${d.title}" (${d.date}, Author: ${d.author})\nType: ${d.type}\nContent:\n${d.content}\n---`)
     .join('\n\n');
@@ -414,6 +528,9 @@ You answer questions like "Why do we do X?" or "Should we switch to Y?" using ON
 
 COMPANY DOCUMENTS:
 ${docContext}
+
+KNOWN DECISIONS (when the answer is about one of these, use its exact title as decisionTitle):
+${(decisionTitles || []).map((t) => `- ${t}`).join('\n') || '(none)'}
 
 USER QUESTION:
 "${query}"
@@ -439,6 +556,7 @@ CRITICAL RULES:
 // 1. ASK MNEMO ENDPOINT (FAST FLASH CALL)
 app.post('/api/ask-lore', async (req, res) => {
   const { query, documents } = req.body;
+  const decisionTitles: string[] = Array.isArray(req.body?.decisionTitles) ? req.body.decisionTitles.map(String).slice(0, 50) : [];
 
   if (!query || typeof query !== 'string') {
     return res.status(400).json({ error: 'Query is required.' });
@@ -451,7 +569,7 @@ app.post('/api/ask-lore', async (req, res) => {
   }
 
   const key = askCacheKey(query, documents);
-  const cached = answerCache.get(key);
+  const cached = await getCachedAnswer(key);
   if (cached) {
     return res.json(cached);
   }
@@ -469,7 +587,7 @@ app.post('/api/ask-lore', async (req, res) => {
   }
 
   try {
-    const prompt = buildAskMnemoPrompt(query, documents);
+    const prompt = buildAskMnemoPrompt(query, documents, decisionTitles);
 
     const response = await gemini.generateContent({
       contents: prompt,
@@ -536,6 +654,7 @@ async function streamAnswer(res: express.Response, answer: any) {
 // 2. ASK MNEMO STREAMING ENDPOINT (FAST SSE PROGRESSIVE STREAMING)
 app.post('/api/ask-lore-stream', async (req, res) => {
   const { query, documents } = req.body;
+  const decisionTitles: string[] = Array.isArray(req.body?.decisionTitles) ? req.body.decisionTitles.map(String).slice(0, 50) : [];
 
   if (!query || typeof query !== 'string') {
     return res.status(400).json({ error: 'Query is required.' });
@@ -547,7 +666,7 @@ app.post('/api/ask-lore-stream', async (req, res) => {
   }
 
   const key = askCacheKey(query, documents);
-  const cached = answerCache.get(key);
+  const cached = await getCachedAnswer(key);
   if (cached) {
     return streamAnswer(res, cached);
   }
@@ -565,7 +684,7 @@ app.post('/api/ask-lore-stream', async (req, res) => {
   }
 
   try {
-    const prompt = buildAskMnemoPrompt(query, documents);
+    const prompt = buildAskMnemoPrompt(query, documents, decisionTitles);
 
     const streamResult = await gemini.generateContentStream({
       contents: prompt,
@@ -658,195 +777,371 @@ app.post('/api/ask-lore-stream', async (req, res) => {
   }
 });
 
-// Verified result for the demo invoice, used when Gemini is unavailable
+// Verified results for the two demo documents, used when Gemini is unavailable
+const LEASE_NOTICE_MARKER = 'Hub North Lease Renewal Notice';
+
 function sampleInvoiceResult(fileName?: string) {
   return {
     status: 'success',
-    message: 'Analysis complete. 1 assumption contradicted.',
+    message: '1 decision assumption went stale.',
     fileName: fileName || 'Vendor_B_Invoice_INV-2026-0912.pdf',
-    fileHash: 'inv-2026-0912-hash',
+    fileHash: 'inv-2026-0912',
+    documentSummary: 'Vendor B invoice INV-2026-0912 dated 2026-09-28: 8,000 units at $13.40/unit, total $107,200.00.',
+    documentText: 'INVOICE: INV-2026-0912 | VENDOR: Vendor B Logistics Ltd. | DATE: September 28, 2026 | Quantity: 8,000 units | Rate: $13.40 / unit | TOTAL AMOUNT DUE: $107,200.00',
     findings: [
       {
         assumptionId: 'a1',
         verdict: 'contradicted',
-        evidenceQuote: 'Vendor B invoice INV-2026-0912, dated 2026-09-28: 8,000 units at $13.40/unit (Total: $107,200.00)',
+        evidenceQuote: 'Rate: $13.40 / unit',
         confidence: 'High',
-        explanation: 'Vendor B unit price has escalated to $13.40/unit, which is higher than competitor Vendor A current active quote of $12.80/unit.'
-      },
-      {
-        assumptionId: 'a2',
-        verdict: 'unrelated',
-        evidenceQuote: 'Payment Terms: Net 30',
-        confidence: 'Medium',
-        explanation: 'Invoice does not contain updated transit SLA turnaround data.'
-      },
-      {
-        assumptionId: 'a3',
-        verdict: 'unrelated',
-        evidenceQuote: 'N/A',
-        confidence: 'Low',
-        explanation: 'Document is a carrier billing invoice, unrelated to weekly Monday synchronization.'
-      },
-      {
-        assumptionId: 'a4',
-        verdict: 'unrelated',
-        evidenceQuote: 'N/A',
-        confidence: 'Low',
-        explanation: 'Document does not contradict SOC2 compliance contract storage policy.'
+        explanation: "Vendor B now charges $13.40/unit, more than Vendor A's current quote of $12.80/unit (D5)."
       }
     ],
     staleCount: 1,
-    monthlyImpact: 4800
+    monthlyImpact: 4800,
+    costFormula: '($13.40 − $12.80) × 8,000 units/month'
   };
 }
 
+function sampleLeaseResult(fileName: string | undefined, activeAssumptions: any[]) {
+  const findings = (activeAssumptions || []).map((a: any) => {
+    const text = String(a.text || '').toLowerCase();
+    if (/cheaper|rent|lease|cost/.test(text) && /hub/.test(text)) {
+      return {
+        assumptionId: a.id,
+        verdict: 'contradicted',
+        evidenceQuote: 'From 1 November 2026, Hub North rent is $13,500 per month.',
+        confidence: 'High',
+        explanation: 'Hub North will cost $13,500/month plus $1,800/month for security, more than Hub South at $12,200/month with security included.'
+      };
+    }
+    if (/security|24\/7|guard|staff/.test(text)) {
+      return {
+        assumptionId: a.id,
+        verdict: 'contradicted',
+        evidenceQuote: 'The on-site 24/7 security contract ends on 31 October 2026. Weekend security will then be billed separately at $1,800 per month.',
+        confidence: 'High',
+        explanation: 'Hub North will no longer include 24/7 security staff from November 2026.'
+      };
+    }
+    return { assumptionId: a.id, verdict: 'unrelated', evidenceQuote: '', confidence: 'High', explanation: 'The lease notice does not mention this.' };
+  });
+  const contradicted = findings.filter((f: any) => f.verdict === 'contradicted').length;
+  return {
+    status: contradicted > 0 ? 'success' : 'no_effect',
+    message: contradicted > 0 ? `${contradicted} decision assumption went stale.` : 'No decisions affected. All assumptions still hold.',
+    fileName: fileName || 'Hub_North_Lease_Renewal_Notice.txt',
+    fileHash: 'hub-north-lease-2026',
+    documentSummary: 'Hub North lease renewal notice dated 2026-10-01: rent rises to $13,500/month and 24/7 security ends on 31 October 2026.',
+    documentText: 'Hub North rent from 1 Nov 2026: $13,500/month. Hub South quote: $12,200/month including weekend security. Hub North 24/7 security contract ends 31 Oct 2026; weekend security then $1,800/month.',
+    findings,
+    staleCount: contradicted,
+    monthlyImpact: contradicted > 0 ? 3100 : 0,
+    costFormula: contradicted > 0 ? '($13,500 + $1,800) − $12,200 per month' : ''
+  };
+}
+
+const CHECK_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    documentSummary: { type: Type.STRING, description: 'One sentence: what the document is, who sent it, its date and key figures.' },
+    documentText: { type: Type.STRING, description: 'Transcription of the key lines and figures of the document, max 800 characters.' },
+    findings: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          assumptionId: { type: Type.STRING },
+          verdict: { type: Type.STRING, description: 'Must be "contradicted", "supported", or "unrelated"' },
+          evidenceQuote: { type: Type.STRING, description: 'Exact text from the NEW document; empty when unrelated' },
+          confidence: { type: Type.STRING, description: 'Must be "High", "Medium", or "Low"' },
+          explanation: { type: Type.STRING, description: 'One plain sentence; name any company record used, e.g. D5' }
+        },
+        required: ['assumptionId', 'verdict', 'evidenceQuote', 'confidence', 'explanation']
+      }
+    },
+    monthlyImpact: { type: Type.NUMBER, description: 'Monthly cost of keeping the contradicted decision, only when the documents give the prices and volumes to compute it; otherwise 0' },
+    costFormula: { type: Type.STRING, description: 'The calculation behind monthlyImpact, e.g. "($13.40 − $12.80) × 8,000 units/month"; empty when monthlyImpact is 0' }
+  },
+  required: ['documentSummary', 'findings', 'monthlyImpact']
+};
+
+const MAX_FILE_BASE64 = 9_000_000;
+const VERDICTS = new Set(['contradicted', 'supported', 'unrelated']);
+const CONFIDENCES = new Set(['High', 'Medium', 'Low']);
+
 // 2. CHECK ASSUMPTIONS ENDPOINT (HERO FEATURE)
 app.post('/api/check-assumptions', async (req, res) => {
-  const { content, fileName, activeAssumptions } = req.body;
+  const { fileName, activeAssumptions, documents, fileData } = req.body || {};
+  const content: string = typeof req.body?.content === 'string' ? req.body.content : '';
+  const hasFile = Boolean(fileData?.data && fileData?.mimeType);
 
-  if (!content || !content.trim()) {
-    return res.status(400).json({
-      status: 'error',
-      message: 'Document is empty or unreadable.'
-    });
+  if (!hasFile && !content.trim()) {
+    return res.status(400).json({ status: 'error', message: 'Document is empty or unreadable.' });
+  }
+  if (hasFile && String(fileData.data).length > MAX_FILE_BASE64) {
+    return res.status(413).json({ status: 'error', message: 'File is too large. Please upload a file under 6 MB.' });
   }
 
-  // Check if it matches Vendor B Invoice INV-2026-0912
-  const isVendorBInvoice = 
-    content.includes('INV-2026-0912') ||
-    content.includes('13.40') ||
-    (content.toLowerCase().includes('vendor b') && content.toLowerCase().includes('invoice'));
+  const assumptions: any[] = Array.isArray(activeAssumptions) ? activeAssumptions : [];
+  const isVendorBInvoice = content.includes('INV-2026-0912');
+  const isLeaseNotice = content.includes(LEASE_NOTICE_MARKER);
+  const verifiedFallback = () =>
+    isVendorBInvoice ? sampleInvoiceResult(fileName) : isLeaseNotice ? sampleLeaseResult(fileName, assumptions) : null;
 
   if (!apiKey) {
-    // Deterministic fallback for demo sample invoice
-    if (isVendorBInvoice) {
-      return res.json(sampleInvoiceResult(fileName));
-    }
-
-    return res.json({
-      status: 'no_effect',
-      message: 'No decisions affected. All assumptions still hold.',
-      fileName: fileName || 'Uploaded_Document.txt',
-      fileHash: 'doc-generic-hash',
-      findings: (activeAssumptions || []).map((a: any) => ({
-        assumptionId: a.id,
-        verdict: 'unrelated',
-        evidenceQuote: 'N/A',
-        confidence: 'High',
-        explanation: 'Document contents do not contradict this assumption.'
-      })),
-      staleCount: 0,
-      monthlyImpact: 0
-    });
+    const fallback = verifiedFallback();
+    if (fallback) return res.json(fallback);
+    return res.status(503).json({ status: 'error', message: 'Gemini is not configured on this server.' });
   }
 
+  const source = hasFile ? String(fileData.data) : content;
+  const fileHash = hashKey('file', source).slice(0, 24);
   const checkKey = hashKey(
     'check',
-    content,
-    (activeAssumptions || []).map((a: any) => `${a.id}:${a.text}`).join(',')
+    source,
+    assumptions.map((a: any) => `${a.id}:${a.text}`).join(','),
+    docSignature(documents || [])
   );
-  const cachedCheck = answerCache.get(checkKey);
+  const cachedCheck = await getCachedAnswer(checkKey);
   if (cachedCheck) {
     return res.json({ ...cachedCheck, fileName: fileName || cachedCheck.fileName });
   }
 
   if (isGeminiPaused()) {
-    if (isVendorBInvoice) {
-      return res.json({ ...sampleInvoiceResult(fileName), servedFrom: 'memory' });
-    }
-    return res.status(429).json({
-      status: 'error',
-      message: 'Mnemo is busy right now. Please retry in a minute.'
-    });
+    const fallback = verifiedFallback();
+    if (fallback) return res.json({ ...fallback, servedFrom: 'memory' });
+    return res.status(429).json({ status: 'error', message: 'Mnemo is busy right now. Please retry in a minute.' });
   }
 
   try {
-    const prompt = `Audit the uploaded document against active company assumptions.
+    const records = (Array.isArray(documents) ? documents : [])
+      .map((d: any) => `[${d.id}] "${d.title}" (${d.date})\n${String(d.content || '').slice(0, 1500)}`)
+      .join('\n---\n');
+
+    const prompt = `You are Mnemo's assumption watcher. Each active assumption below is a condition that a past company decision depended on.
 
 ACTIVE ASSUMPTIONS:
-${(activeAssumptions || []).map((a: any) => `- ID: ${a.id} | Decision: "${a.decisionTitle || 'Active Decision'}" | Assumption: "${a.text}"`).join('\n')}
+${assumptions.map((a: any) => `- ID: ${a.id} | Decision: "${a.decisionTitle || 'Decision'}" | Assumption: "${a.text}"`).join('\n')}
 
-UPLOADED DOCUMENT (${fileName || 'document'}):
-"""
-${content}
-"""
+COMPANY RECORDS (latest known facts, use them for comparisons such as competitor quotes):
+${records || '(none)'}
+
+NEW DOCUMENT: ${fileName || 'document'}
+${hasFile ? '(attached as a file)' : `"""\n${content.slice(0, 30000)}\n"""`}
 
 TASK:
-For each assumption ID, determine if the document contradicts, supports, or is unrelated to it.
-- If unit rate for Vendor B exceeds competitor Vendor A ($12.80/unit from Doc D5), assumption 'a1' is "contradicted".
-- Quote exact evidence from the document.
-- Estimate monthly financial impact if contradicted (e.g. ($13.40 - $12.80) * 8000 = 4800).`;
+1. documentSummary: one sentence on what the new document is (type, sender, date, key figures). documentText: transcribe its key lines and figures.
+2. For EVERY assumption ID give a verdict:
+   - "contradicted": the new document, alone or combined with the company records, shows the assumption is no longer true.
+   - "supported": the new document confirms the assumption still holds.
+   - "unrelated": the new document says nothing about it.
+   evidenceQuote: exact text copied from the NEW document (empty when unrelated). explanation: one plain sentence, naming any company record you used.
+3. monthlyImpact: the extra monthly cost of keeping a contradicted decision instead of the best alternative named in the documents, only when the documents give the figures to compute it, otherwise 0. Use per-unit price × monthly volume, or compare monthly prices directly (add any new monthly charges the document introduces). costFormula: the calculation.
+Never invent numbers, names or dates.`;
 
     const response = await gemini.generateContent({
-      contents: prompt,
+      contents: hasFile
+        ? [{ role: 'user', parts: [{ text: prompt }, { inlineData: { mimeType: String(fileData.mimeType), data: String(fileData.data) } }] }]
+        : prompt,
       config: {
         temperature: 0,
         responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            findings: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  assumptionId: { type: Type.STRING },
-                  verdict: {
-                    type: Type.STRING,
-                    description: 'Must be "contradicted", "supported", or "unrelated"'
-                  },
-                  evidenceQuote: { type: Type.STRING },
-                  confidence: {
-                    type: Type.STRING,
-                    description: 'Must be "High", "Medium", or "Low"'
-                  },
-                  explanation: { type: Type.STRING }
-                },
-                required: ['assumptionId', 'verdict', 'evidenceQuote', 'confidence', 'explanation']
-              }
-            },
-            monthlyImpact: {
-              type: Type.NUMBER,
-              description: 'Estimated financial cost or penalty per month if contradicted (e.g. ($13.40 - $12.80) * 8000 = 4800)'
-            }
-          },
-          required: ['findings']
-        }
+        responseSchema: CHECK_SCHEMA
       }
     });
 
     const parsed = JSON.parse(response.text?.trim() || '{}');
-    const findings: any[] = parsed.findings || [];
-    const contradicted = findings.filter(f => f.verdict === 'contradicted');
-
-    const monthlyImpact = parsed.monthlyImpact !== undefined && parsed.monthlyImpact !== null
-      ? parsed.monthlyImpact
-      : (isVendorBInvoice ? 4800 : 0);
+    const knownIds = new Set(assumptions.map((a: any) => a.id));
+    const findings = (parsed.findings || [])
+      .filter((f: any) => knownIds.has(f.assumptionId))
+      .map((f: any) => ({
+        assumptionId: f.assumptionId,
+        verdict: VERDICTS.has(f.verdict) ? f.verdict : 'unrelated',
+        evidenceQuote: String(f.evidenceQuote || ''),
+        confidence: CONFIDENCES.has(f.confidence) ? f.confidence : 'Medium',
+        explanation: String(f.explanation || '')
+      }));
+    const contradicted = findings.filter((f: any) => f.verdict === 'contradicted');
+    const monthlyImpact = contradicted.length > 0 ? Math.max(0, Math.round(Number(parsed.monthlyImpact) || 0)) : 0;
 
     const result = {
       status: contradicted.length > 0 ? 'success' : 'no_effect',
       message: contradicted.length > 0
         ? `${contradicted.length} decision assumption went stale.`
         : 'No decisions affected. All assumptions still hold.',
-      fileName: fileName || 'Uploaded_Document.pdf',
-      fileHash: Buffer.from(content).toString('base64').substring(0, 32),
+      fileName: fileName || 'Uploaded document',
+      fileHash,
+      documentSummary: String(parsed.documentSummary || ''),
+      documentText: String(parsed.documentText || '').slice(0, 1200),
       findings,
       staleCount: contradicted.length,
-      monthlyImpact
+      monthlyImpact,
+      costFormula: monthlyImpact > 0 ? String(parsed.costFormula || '') : ''
     };
     rememberAnswer(checkKey, result);
     return res.json(result);
   } catch (err: any) {
     console.error('Check assumptions error:', err);
+    const fallback = verifiedFallback();
+    if (fallback) return res.json({ ...fallback, servedFrom: 'memory' });
+    return res.status(isQuotaError(err) ? 429 : 500).json({
+      status: 'error',
+      message: isQuotaError(err)
+        ? 'Mnemo is busy right now. Please retry in a minute.'
+        : 'Something went wrong analyzing the document. Please retry.'
+    });
+  }
+});
 
-    // Fallback if AI call fails
-    if (isVendorBInvoice) {
-      return res.json({ ...sampleInvoiceResult(fileName), servedFrom: 'memory' });
+// 2b. CAPTURE A DECISION ENDPOINT (EXTRACTION)
+const EXTRACT_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    found: { type: Type.BOOLEAN },
+    message: { type: Type.STRING },
+    title: { type: Type.STRING, description: 'Short imperative title, e.g. "Use Vendor B as primary supplier"' },
+    date: { type: Type.STRING, description: 'Decision date as YYYY-MM-DD if stated, else empty' },
+    lead: { type: Type.STRING, description: 'Who made or announced the decision, with role if stated' },
+    summary: { type: Type.STRING },
+    reasons: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: { text: { type: Type.STRING }, quote: { type: Type.STRING } },
+        required: ['text', 'quote']
+      }
+    },
+    assumptions: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          text: { type: Type.STRING, description: 'A checkable condition the decision depends on, phrased as a statement that is true today' },
+          quote: { type: Type.STRING }
+        },
+        required: ['text', 'quote']
+      }
+    },
+    options: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          name: { type: Type.STRING },
+          accepted: { type: Type.BOOLEAN },
+          reason: { type: Type.STRING }
+        },
+        required: ['name', 'accepted', 'reason']
+      }
+    }
+  },
+  required: ['found', 'title', 'summary', 'reasons', 'assumptions', 'options']
+};
+
+const CAPTURE_EXAMPLE_MARKER = 'Decision: weekend dispatch moves to Hub North';
+
+function fallbackExtraction() {
+  return {
+    found: true,
+    title: 'Move weekend dispatch to Hub North',
+    date: '2025-05-06',
+    lead: 'Daniel Cruz, Ops Director',
+    summary: 'All weekend dispatch moves to Hub North from 1 June 2025, because it has 24/7 security staff and lower rent than Hub South.',
+    reasons: [
+      { text: 'Hub North has 24/7 security staff, so weekend guards at Hub South are no longer needed', quote: 'Hub North has 24/7 security staff on site, so we no longer need to pay weekend guards at Hub South.' },
+      { text: 'Hub North rent is $3,000 per month cheaper than Hub South', quote: 'Its lease is $3,000 per month cheaper than Hub South ($9,000 vs $12,000).' }
+    ],
+    assumptions: [
+      { text: 'Hub North is cheaper to run than Hub South', quote: 'Its lease is $3,000 per month cheaper than Hub South ($9,000 vs $12,000).' },
+      { text: 'Hub North has 24/7 security staff on site', quote: 'Hub North has 24/7 security staff on site' }
+    ],
+    options: [
+      { name: 'Hub North', accepted: true, reason: 'Cheaper lease and 24/7 security on site' },
+      { name: 'Keep weekends at Hub South', accepted: false, reason: 'The overtime security cost made it the more expensive option.' }
+    ]
+  };
+}
+
+const normalizeText = (s: string) => s.toLowerCase().replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/\s+/g, ' ').trim();
+
+app.post('/api/extract-decision', async (req, res) => {
+  const text: string = typeof req.body?.text === 'string' ? req.body.text : '';
+  if (text.trim().length < 40) {
+    return res.status(400).json({ error: 'Paste at least a few sentences that describe a decision.' });
+  }
+  if (text.length > 20000) {
+    return res.status(413).json({ error: 'That text is too long. Paste up to 20,000 characters.' });
+  }
+
+  const isExample = text.includes(CAPTURE_EXAMPLE_MARKER);
+  if (!apiKey) {
+    if (isExample) return res.json(fallbackExtraction());
+    return res.status(503).json({ error: 'Gemini is not configured on this server.' });
+  }
+
+  const key = hashKey('extract', text);
+  const cached = await getCachedAnswer(key);
+  if (cached) return res.json(cached);
+
+  if (isGeminiPaused()) {
+    if (isExample) return res.json({ ...fallbackExtraction(), servedFrom: 'memory' });
+    return res.status(429).json({ error: 'Mnemo is busy right now. Please retry in a minute.' });
+  }
+
+  try {
+    const prompt = `You are Mnemo's decision extractor. Read the text below (an email, memo, meeting note or chat) and capture the ONE main decision it records.
+
+TEXT:
+"""
+${text}
+"""
+
+RULES:
+1. Use ONLY the text. Never invent names, dates, numbers, options or reasons.
+2. reasons: why the decision was made. assumptions: the checkable conditions the decision depends on, each phrased as a statement that is true today (e.g. "Vendor B is cheaper than Vendor A"), so a later document can prove it false.
+3. Every reason and assumption needs a quote copied EXACTLY from the text.
+4. options: the alternatives mentioned, with accepted true for the chosen one and the stated reason for each.
+5. If the text records no decision, set found false and explain briefly in message.`;
+
+    const response = await gemini.generateContent({
+      contents: prompt,
+      config: { temperature: 0, responseMimeType: 'application/json', responseSchema: EXTRACT_SCHEMA }
+    });
+
+    const parsed = JSON.parse(response.text?.trim() || '{}');
+    const haystack = normalizeText(text);
+    const grounded = (items: any[]) =>
+      (items || []).filter((it: any) => it?.text && it?.quote && haystack.includes(normalizeText(String(it.quote))));
+    const reasons = grounded(parsed.reasons);
+    const assumptions = grounded(parsed.assumptions);
+
+    if (!parsed.found || assumptions.length === 0) {
+      const result = {
+        found: false,
+        message: parsed.message || 'No decision with checkable reasons was found in this text.'
+      };
+      rememberAnswer(key, result);
+      return res.json(result);
     }
 
-    return res.status(500).json({
-      status: 'error',
-      message: 'Something went wrong analyzing the document. Please retry.'
+    const result = {
+      found: true,
+      title: String(parsed.title || 'Captured decision'),
+      date: /^\d{4}-\d{2}-\d{2}$/.test(parsed.date || '') ? parsed.date : '',
+      lead: String(parsed.lead || ''),
+      summary: String(parsed.summary || ''),
+      reasons,
+      assumptions,
+      options: (parsed.options || []).filter((o: any) => o?.name)
+    };
+    rememberAnswer(key, result);
+    return res.json(result);
+  } catch (err: any) {
+    console.error('Extract decision error:', err);
+    if (isExample) return res.json({ ...fallbackExtraction(), servedFrom: 'memory' });
+    return res.status(isQuotaError(err) ? 429 : 500).json({
+      error: isQuotaError(err) ? 'Mnemo is busy right now. Please retry in a minute.' : 'Gemini could not read this text. Please retry.'
     });
   }
 });
@@ -925,7 +1220,7 @@ app.post('/api/scan-conflicts', async (req, res) => {
   }
 
   const key = hashKey('conflicts', docSignature(documents));
-  const cached = answerCache.get(key);
+  const cached = await getCachedAnswer(key);
   if (cached) {
     return res.json(cached);
   }
@@ -1082,7 +1377,7 @@ app.post('/api/ask-expert', async (req, res) => {
   }
 
   const key = hashKey('expert', expertId, normalizeQuestion(question));
-  const cached = answerCache.get(key);
+  const cached = await getCachedAnswer(key);
   if (cached) {
     return res.json(cached);
   }

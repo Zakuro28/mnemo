@@ -235,6 +235,35 @@ Notes: Price adjustment includes escalated regional fuel surcharge index.
 =====================================================`
 };
 
+// Example for "Capture a decision": a decision email Mnemo has not seen yet
+export const CAPTURE_EXAMPLE_TEXT = `From: Daniel Cruz <d.cruz@brightwell.com>
+To: Ops Leads <ops-leads@brightwell.com>
+Date: May 6, 2025
+Subject: Decision: weekend dispatch moves to Hub North
+
+Team,
+After comparing both sites, we are moving all weekend dispatch to Hub North from 1 June.
+Hub North has 24/7 security staff on site, so we no longer need to pay weekend guards at Hub South.
+Its lease is $3,000 per month cheaper than Hub South ($9,000 vs $12,000).
+We considered keeping weekends at Hub South, but the overtime security cost made it the more expensive option.
+
+Daniel Cruz, Ops Director`;
+
+// Second sample upload: contradicts both assumptions of the captured Hub North decision
+export const SAMPLE_LEASE_NOTICE = {
+  fileName: 'Hub_North_Lease_Renewal_Notice.txt',
+  textRepresentation: `Hub North Lease Renewal Notice
+From: Northgate Property Management
+To: Brightwell Logistics, Operations
+Date: October 1, 2026
+
+Your lease for Hub North renews on 1 November 2026.
+From 1 November 2026, Hub North rent is $13,500 per month.
+The on-site 24/7 security contract ends on 31 October 2026. Weekend security will then be billed separately at $1,800 per month.
+
+For comparison, your broker reports: Hub South has quoted $12,200 per month for the same term, including weekend security.`
+};
+
 export const INITIAL_DECISIONS: Decision[] = [
   {
     id: 'dec-vendor-b',

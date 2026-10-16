@@ -25,7 +25,8 @@ const SAMPLE_QUESTIONS = [
 ];
 
 export const AskLoreView: React.FC<AskLoreViewProps> = ({ initialQuery = '' }) => {
-  const { documents, openSourceByDocId, addToast, resetKey, registerAbortController } = useLore();
+  const { documents, decisions, openSourceByDocId, addToast, resetKey, registerAbortController } = useLore();
+  const decisionTitles = decisions.map((d) => d.title);
   const [query, setQuery] = useState(initialQuery);
   const [isLoading, setIsLoading] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
@@ -154,7 +155,7 @@ export const AskLoreView: React.FC<AskLoreViewProps> = ({ initialQuery = '' }) =
       const streamRes = await fetch('/api/ask-lore-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q, documents }),
+        body: JSON.stringify({ query: q, documents, decisionTitles }),
         signal: controller.signal
       });
 
@@ -284,7 +285,7 @@ export const AskLoreView: React.FC<AskLoreViewProps> = ({ initialQuery = '' }) =
           const fallbackRes = await fetch('/api/ask-lore', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: q, documents }),
+            body: JSON.stringify({ query: q, documents, decisionTitles }),
             signal: controller.signal
           });
 

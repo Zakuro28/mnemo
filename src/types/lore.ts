@@ -40,6 +40,25 @@ export interface StaleAnalysis {
   confidence: ConfidenceLevel;
   suggestedAction: string;
   reviewStatus: 'pending' | 'marked_for_review' | 'dismissed';
+  assumptionText?: string;
+  explanation?: string;
+  costFormula?: string;
+  newSourceDocId?: string;
+  // Set for the Vendor B demo invoice, which also shows the Vendor A quote side by side
+  comparison?: 'vendor-b-invoice';
+}
+
+export interface ExtractedDecision {
+  found: boolean;
+  message?: string;
+  title?: string;
+  date?: string;
+  lead?: string;
+  summary?: string;
+  reasons?: Array<{ text: string; quote: string }>;
+  assumptions?: Array<{ text: string; quote: string }>;
+  options?: Array<{ name: string; accepted: boolean; reason: string }>;
+  servedFrom?: 'memory';
 }
 
 export interface Decision {
@@ -153,4 +172,8 @@ export interface CheckAssumptionsResponse {
   findings: AssumptionCheckFinding[];
   staleCount: number;
   monthlyImpact?: number;
+  costFormula?: string;
+  documentSummary?: string;
+  documentText?: string;
+  servedFrom?: 'memory';
 }

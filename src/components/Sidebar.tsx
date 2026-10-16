@@ -1,10 +1,37 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { LayoutDashboard, Sparkles, GitBranch, FileUp, Swords, UserRound, Building2 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useLore, ViewType } from '../context/LoreContext';
 import { MnemoLogo } from './MnemoLogo';
 
-export const Sidebar: React.FC = () => {
+interface SidebarProps {
+  mobileOpen?: boolean;
+  onClose?: () => void;
+}
+
+export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen = false, onClose }) => {
+  const [firestoreLive, setFirestoreLive] = useState(false);
+
+  // Ask the server whether Firestore is really reachable; recheck every minute
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const res = await fetch('/api/health');
+        const data = await res.json();
+        if (!cancelled) setFirestoreLive(data.firestore === 'connected');
+      } catch {
+        if (!cancelled) setFirestoreLive(false);
+      }
+    };
+    check();
+    const timer = setInterval(check, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
   const { activeView, setActiveView, staleCount, watchCount, conflictScan, conflictActions } = useLore();
   const openConflicts = conflictScan
     ? conflictScan.conflicts.filter((c) => !conflictActions[c.id]).length
@@ -62,7 +89,16 @@ export const Sidebar: React.FC = () => {
   ];
 
   return (
-    <aside className="w-64 shrink-0 bg-[#2C6B5C] text-white border-r border-[#3D8D7A]/40 flex flex-col justify-between select-none z-20">
+    <>
+    {/* Dimmed backdrop behind the phone drawer */}
+    {mobileOpen && (
+      <div className="fixed inset-0 z-30 bg-[#12332B]/40 md:hidden" onClick={onClose} aria-hidden="true" />
+    )}
+    <aside
+      className={`w-64 shrink-0 bg-[#2C6B5C] text-white border-r border-[#3D8D7A]/40 flex flex-col justify-between select-none z-40 overflow-y-auto fixed inset-y-0 left-0 transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] md:static md:translate-x-0 ${
+        mobileOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'
+      }`}
+    >
       <div>
         {/* Brand Area */}
         <div className="p-6 border-b border-[#3D8D7A]/40">
@@ -160,12 +196,15 @@ export const Sidebar: React.FC = () => {
         </nav>
       </div>
 
-      {/* Footer Info */}
-      <div className="p-4 border-t border-[#3D8D7A]/40 text-[12px] text-white/70">
-        <p className="leading-snug">
-          Grounded against Brightwell company documents.
+      {/* Footer: live status of the Google Cloud services behind the app */}
+      <div className="p-4 border-t border-[#3D8D7A]/40 text-[12px] text-white/75 space-y-1.5">
+        <p className="flex items-center gap-2">
+          <span className={`w-2 h-2 rounded-full shrink-0 ${firestoreLive ? 'bg-[#8EE3C8]' : 'bg-white/35'}`} />
+          {firestoreLive ? 'Memory synced to Firestore' : 'Firestore offline · working in this browser'}
         </p>
+        <p className="text-white/55 leading-snug">Gemini on Google Cloud Run</p>
       </div>
     </aside>
+    </>
   );
 };

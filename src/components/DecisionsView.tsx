@@ -1,27 +1,38 @@
-import React from 'react';
-import { 
-  GitBranch, 
-  AlertCircle, 
-  AlertTriangle, 
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  AlertCircle,
   ExternalLink,
   ChevronRight,
-  ShieldAlert,
-  UserRound
+  Plus
 } from 'lucide-react';
 import { useLore } from '../context/LoreContext';
 import { DecisionStatus } from '../types/lore';
+import { StaleEvidenceCard } from './StaleEvidenceCard';
+import { CaptureDecisionModal } from './CaptureDecisionModal';
 
 export const DecisionsView: React.FC = () => {
-  const { 
-    decisions, 
-    selectedDecisionId, 
-    setSelectedDecisionId, 
+  const {
+    decisions,
+    selectedDecisionId,
+    setSelectedDecisionId,
     openSourceByDocId,
-    updateDecisionReviewStatus,
-    askExpert
+    resetKey
   } = useLore();
+  const [isCaptureOpen, setIsCaptureOpen] = useState(false);
+  const detailRef = useRef<HTMLDivElement | null>(null);
 
   const activeDecision = decisions.find((d) => d.id === selectedDecisionId) || null;
+
+  useEffect(() => {
+    setIsCaptureOpen(false);
+  }, [resetKey]);
+
+  // Bring the opened decision into view
+  useEffect(() => {
+    if (selectedDecisionId) {
+      setTimeout(() => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
+    }
+  }, [selectedDecisionId]);
 
   const renderStatusPill = (status: DecisionStatus) => {
     switch (status) {
@@ -63,14 +74,32 @@ export const DecisionsView: React.FC = () => {
   return (
     <div className="space-y-8 pb-16 animate-page-enter">
       {/* Page Header */}
-      <div>
-        <h1 className="font-serif text-[48px] md:text-[56px] font-normal tracking-tight text-[#12332B] leading-tight">
-          Decisions
-        </h1>
-        <p className="text-[#3F5A52] text-[16px] leading-relaxed max-w-3xl mt-2">
-          Track company decisions and their underlying assumptions. Stale choices are flagged when new evidence surfaces.
-        </p>
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+        <div>
+          <h1 className="font-serif text-[48px] md:text-[56px] font-normal tracking-tight text-[#12332B] leading-tight">
+            Decisions
+          </h1>
+          <p className="text-[#3F5A52] text-[16px] leading-relaxed max-w-3xl mt-2">
+            Track company decisions and their underlying assumptions. Stale choices are flagged when new evidence surfaces.
+          </p>
+        </div>
+        <button
+          onClick={() => setIsCaptureOpen(true)}
+          className="btn-primary-teal inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl text-[14px] font-semibold shrink-0 self-start md:self-auto"
+        >
+          <Plus className="w-4 h-4" strokeWidth={2.25} />
+          Capture a decision
+        </button>
       </div>
+
+      <CaptureDecisionModal
+        open={isCaptureOpen}
+        onClose={() => setIsCaptureOpen(false)}
+        onCaptured={(id) => {
+          setIsCaptureOpen(false);
+          setSelectedDecisionId(id);
+        }}
+      />
 
       {/* Grid of decision cards (2 columns) */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -149,7 +178,7 @@ export const DecisionsView: React.FC = () => {
 
       {/* Decision Detail Drawer / Expanded Modal */}
       {activeDecision && (
-        <div className="mnemo-card p-6 md:p-8 space-y-8 animate-in fade-in duration-200">
+        <div ref={detailRef} className="mnemo-card p-6 md:p-8 space-y-8 animate-in fade-in duration-200 scroll-mt-6">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-[#EDE8C4] pb-6">
             <div>
               <div className="flex items-center gap-3 mb-2">
@@ -174,133 +203,9 @@ export const DecisionsView: React.FC = () => {
             </button>
           </div>
 
-          {/* Stale Side-by-Side Card if Stale */}
+          {/* Stale evidence: original reason vs new evidence, built from what Gemini found */}
           {activeDecision.status === 'Stale' && activeDecision.staleAnalysis && (
-            <div className="rounded-2xl border-l-4 border-l-[#C8553D] border border-[#C8553D]/30 bg-[#FFF8F6] p-6 space-y-6 shadow-[0_8px_32px_rgba(200,85,61,0.08)] stale-card-shimmer">
-              <div className="relative z-10 flex items-center justify-between flex-wrap gap-2 pb-4 border-b border-[#C8553D]/20">
-                <div className="flex items-center gap-2">
-                  <ShieldAlert className="w-5 h-5 text-[#C8553D]" strokeWidth={1.75} />
-                  <span className="text-[15px] font-semibold text-[#12332B]">
-                    Assumption Contradicted · Decision Stale
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[12px] font-bold px-2.5 py-0.5 rounded-full bg-white text-[#C8553D] border border-[#C8553D]/30 shadow-xs">
-                    Confidence: {activeDecision.staleAnalysis.confidence}
-                  </span>
-                </div>
-              </div>
-
-              {/* Side-by-Side: Original Reason vs New Evidence */}
-              <div className="relative z-10 grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* LEFT: Original Reason */}
-                <div className="p-5 rounded-xl bg-white border border-[#E3EAE7] space-y-2 shadow-xs">
-                  <div className="flex items-center justify-between text-[13px]">
-                    <span className="font-semibold text-[#7A8C86]">
-                      Original reason · 2024
-                    </span>
-                    <button
-                      onClick={() => openSourceByDocId(activeDecision.staleAnalysis!.originalSourceId)}
-                      className="text-[#3D8D7A] hover:underline flex items-center gap-1 font-semibold text-[12px]"
-                    >
-                      Source {activeDecision.staleAnalysis.originalSourceId} <ExternalLink className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                  <div className="bg-[#F7FAF9] p-3.5 rounded-xl text-[14px] text-[#3F5A52] italic border border-[#E3EAE7]">
-                    "{activeDecision.staleAnalysis.originalReason}"
-                  </div>
-                </div>
-
-                {/* RIGHT: New Evidence showing BOTH sources + math */}
-                <div className="p-5 rounded-xl bg-white border border-[#C8553D]/30 space-y-3 shadow-xs">
-                  <div className="flex items-center justify-between text-[13px]">
-                    <span className="font-semibold text-[#C8553D]">
-                      New evidence · 2026
-                    </span>
-                    <span className="text-[#7A8C86] text-[12px]">2 verified sources</span>
-                  </div>
-
-                  <div className="space-y-2">
-                    {/* Source 1: Vendor B invoice */}
-                    <div className="bg-[#F7FAF9] p-3 rounded-xl space-y-1 border border-[#E3EAE7]">
-                      <div className="flex items-center justify-between text-[13px]">
-                        <span className="font-medium text-[#12332B]">Vendor B invoice INV-2026-0912</span>
-                        <span className="px-2 py-0.5 rounded-full bg-white text-[11px] font-mono text-[#7A8C86] border border-[#E3EAE7]">
-                          2026-09-28
-                        </span>
-                      </div>
-                      <p className="text-[13px] text-[#3F5A52]">
-                        8,000 units at <span className="font-bold text-[#C8553D]">$13.40 / unit</span> (total $107,200.00)
-                      </p>
-                    </div>
-
-                    {/* Source 2: Vendor A quote D5 */}
-                    <div className="bg-[#F7FAF9] p-3 rounded-xl space-y-1 border border-[#E3EAE7]">
-                      <div className="flex items-center justify-between text-[13px]">
-                        <span className="font-medium text-[#12332B]">Vendor A quote (Doc D5)</span>
-                        <button
-                          onClick={() => openSourceByDocId('D5')}
-                          className="px-2 py-0.5 rounded-full bg-[#E3F0EC] text-[11px] font-semibold text-[#2C6B5C] border border-[#3D8D7A]/30 hover:bg-[#3D8D7A] hover:text-white transition-colors"
-                        >
-                          Doc D5 (2026-09-02)
-                        </button>
-                      </div>
-                      <p className="text-[13px] text-[#3F5A52]">
-                        Quote from Vendor A: <span className="font-semibold text-[#3D8D7A]">$12.80/unit</span>, 3-day delivery
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="p-2.5 rounded-lg bg-[#C8553D]/10 border border-[#C8553D]/20">
-                    <p className="text-[13px] font-semibold text-[#C8553D]">
-                      Vendor B is now $0.60/unit MORE expensive than Vendor A.
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Cost & Suggested Action: "$4,800 / month" in Instrument Serif 64px terracotta */}
-              <div className="relative z-10 pt-4 border-t border-[#C8553D]/20 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div>
-                  <span className="text-[13px] text-[#7A8C86] block font-medium">
-                    Estimated cost of keeping this decision
-                  </span>
-                  <div className="flex items-baseline gap-2 mt-1">
-                    <span className="font-serif text-[64px] text-[#C8553D] font-normal leading-none inline-block tabular-nums">
-                      ${activeDecision.staleAnalysis.monthlyCost.toLocaleString()}
-                    </span>
-                    <span className="text-[18px] font-sans text-[#3F5A52]">/ month</span>
-                  </div>
-                  <p className="text-[12px] text-[#7A8C86] mt-1 font-mono">
-                    ($13.40 − $12.80) × 8,000 units/month
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => updateDecisionReviewStatus(activeDecision.id, 'marked_for_review')}
-                    className="btn-primary-teal px-5 py-2.5 text-white text-[14px] font-semibold rounded-xl transition-all active:scale-[0.97]"
-                  >
-                    {activeDecision.staleAnalysis.reviewStatus === 'marked_for_review'
-                      ? '✓ Marked for review'
-                      : 'Review vendor choice'}
-                  </button>
-                  <button
-                    onClick={() => askExpert('What should we do about Vendor B now?')}
-                    className="btn-secondary-teal inline-flex items-center gap-2 px-4 py-2.5 text-[14px] font-medium rounded-xl"
-                  >
-                    <UserRound className="w-4 h-4" strokeWidth={1.75} />
-                    Ask Maria's twin
-                  </button>
-                  <button
-                    onClick={() => updateDecisionReviewStatus(activeDecision.id, 'dismissed')}
-                    className="btn-secondary-teal px-4 py-2.5 text-[14px] font-medium rounded-xl transition-all active:scale-[0.97]"
-                  >
-                    Dismiss
-                  </button>
-                </div>
-              </div>
-            </div>
+            <StaleEvidenceCard decision={activeDecision} />
           )}
 
           {/* Assumptions */}

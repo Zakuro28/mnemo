@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useLore } from '../context/LoreContext';
 import { ConfidenceLevel, ConflictScanResult, PolicyConflict, PolicySide } from '../types/lore';
+import { logWorkspaceEvent } from '../services/workspace';
 
 const SCAN_STEPS = [
   'Reading policies...',
@@ -108,6 +109,7 @@ export const ConflictsView: React.FC = () => {
       if (controller.signal.aborted) return;
 
       setConflictScan(data);
+      void logWorkspaceEvent('conflicts_scanned', { conflicts: data.conflicts.map((c) => c.topic) });
       const found = data.conflicts.length;
       addToast({
         type: found > 0 ? 'warning' : 'success',
@@ -127,6 +129,7 @@ export const ConflictsView: React.FC = () => {
 
   const sendForApproval = (conflict: PolicyConflict) => {
     setConflictAction(conflict.id, 'sent');
+    void logWorkspaceEvent('conflict_sent', { topic: conflict.topic, suggestedFix: conflict.suggestedFix });
     addToast({
       type: 'success',
       title: 'Sent for approval',

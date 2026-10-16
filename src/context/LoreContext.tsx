@@ -1,14 +1,19 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import {
+  Assumption,
+  AssumptionCheckFinding,
+  CheckAssumptionsResponse,
   ConflictAction,
   ConflictScanResult,
   Decision,
   ExpertMessage,
+  ExtractedDecision,
   LoreDocument,
   StaleAnalysis
 } from '../types/lore';
-import { INITIAL_DECISIONS, SEED_DOCUMENTS } from '../data/seedData';
+import { INITIAL_DECISIONS, SAMPLE_INVOICE_DATA, SEED_DOCUMENTS } from '../data/seedData';
 import { clearAskCache } from '../services/askCache';
+import { logWorkspaceEvent } from '../services/workspace';
 
 interface ToastMessage {
   id: string;
@@ -65,7 +70,8 @@ interface LoreContextType {
   registerAbortController: (controller: AbortController) => () => void;
   cancelRunningRequests: () => void;
   updateDecisionReviewStatus: (decisionId: string, status: 'marked_for_review' | 'dismissed') => void;
-  applyAssumptionExpiry: (findings: any[], monthlyImpact: number, fileName: string) => void;
+  applyAssumptionExpiry: (result: CheckAssumptionsResponse, uploadedText: string) => void;
+  addCapturedDecision: (extracted: ExtractedDecision, sourceText: string) => Decision;
   isStaleHeroActive: boolean;
   setIsStaleHeroActive: (active: boolean) => void;
   heroStaleDecision: Decision | null;
@@ -88,7 +94,7 @@ interface LoreContextType {
 
 const LoreContext = createContext<LoreContextType | undefined>(undefined);
 
-const STORAGE_KEY = 'mnemo_brightwell_state_v3';
+const STORAGE_KEY = 'mnemo_brightwell_state_v4';
 
 export const LoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [decisions, setDecisions] = useState<Decision[]>(() => {
@@ -205,6 +211,7 @@ export const LoreProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const resetDemo = () => {
     cancelRunningRequests();
     clearAskCache();
+    void logWorkspaceEvent('demo_reset', {});
     setDecisions(INITIAL_DECISIONS);
     setDocuments(SEED_DOCUMENTS);
     setUploadedFiles([]);
@@ -260,6 +267,10 @@ export const LoreProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const updateDecisionReviewStatus = (decisionId: string, status: 'marked_for_review' | 'dismissed') => {
+    const decision = decisions.find((d) => d.id === decisionId);
+    const title = decision?.title || 'Decision';
+    void logWorkspaceEvent('review_requested', { decisionId, title, status });
+
     setDecisions((prev) =>
       prev.map((dec) => {
         if (dec.id === decisionId && dec.staleAnalysis) {
@@ -275,13 +286,12 @@ export const LoreProvider: React.FC<{ children: React.ReactNode }> = ({ children
       })
     );
 
-    // Add activity
     setActivityFeed((prev) => [
       {
         id: `act-${Date.now()}`,
-        text: status === 'marked_for_review' 
-          ? 'Decision "Use Vendor B" marked for executive review'
-          : 'Decision "Use Vendor B" stale alert dismissed',
+        text: status === 'marked_for_review'
+          ? `"${title}" marked for review`
+          : `Stale alert dismissed for "${title}"`,
         timestamp: 'Just now',
         type: 'decision'
       },
@@ -290,110 +300,199 @@ export const LoreProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     addToast({
       type: status === 'marked_for_review' ? 'warning' : 'info',
-      title: status === 'marked_for_review' ? 'Marked for Review' : 'Stale Alert Dismissed',
-      description: status === 'marked_for_review' 
-        ? 'Assigned to Procurement Lead Maria Tan for supplier re-bid.'
-        : 'Acknowledged and dismissed by operator.'
+      title: status === 'marked_for_review' ? 'Marked for review' : 'Stale alert dismissed',
+      description: status === 'marked_for_review'
+        ? `"${title}" was sent to its owners for review.`
+        : 'Dismissed. You can still find the evidence on the Decisions page.'
     });
   };
 
-  const applyAssumptionExpiry = (findings: any[], monthlyImpact: number, fileName: string) => {
+  const today = () => new Date().toISOString().slice(0, 10);
+
+  const applyAssumptionExpiry = (result: CheckAssumptionsResponse, uploadedText: string) => {
     clearAskCache();
+    const fileName = result.fileName;
+    const checkedOn = today();
+
     if (!uploadedFiles.includes(fileName)) {
       setUploadedFiles((prev) => [...prev, fileName]);
     }
 
-    let modified = false;
-    let staleDec: Decision | null = null;
+    // Keep the uploaded document in company memory so Ask Mnemo can cite it
+    let newDocId: string | undefined;
+    const docContent = uploadedText.trim() ? uploadedText : (result.documentText || result.documentSummary || '');
+    if (docContent && !documents.some((d) => d.title === fileName)) {
+      newDocId = `U${documents.filter((d) => d.id.startsWith('U')).length + 1}`;
+      const doc: LoreDocument = {
+        id: newDocId,
+        title: fileName,
+        date: checkedOn,
+        author: 'Uploaded document',
+        type: /invoice/i.test(fileName) ? 'invoice' : 'report',
+        content: docContent,
+        snippet: result.documentSummary || docContent.slice(0, 160)
+      };
+      setDocuments((prev) => [...prev, doc]);
+    }
 
-    setDecisions((prevDecisions) => {
-      const next = prevDecisions.map((decision) => {
-        let decisionHasContradiction = false;
-        let contradictedAssumptionQuote = '';
+    const findings = result.findings || [];
+    const isDemoInvoice = fileName === SAMPLE_INVOICE_DATA.fileName;
+    let costAssigned = false;
+    const staleDecisions: Decision[] = [];
 
-        const updatedAssumptions = decision.assumptions.map((assumption) => {
-          const finding = findings.find((f: any) => f.assumptionId === assumption.id);
-          if (finding) {
-            if (finding.verdict === 'contradicted') {
-              decisionHasContradiction = true;
-              contradictedAssumptionQuote = finding.evidenceQuote;
-              return {
-                ...assumption,
-                status: 'Stale' as const,
-                latestEvidence: finding.evidenceQuote,
-                lastCheckedDate: '2026-09-28'
-              };
-            }
-            if (finding.verdict === 'supported') {
-              return {
-                ...assumption,
-                status: 'Valid' as const,
-                latestEvidence: finding.evidenceQuote,
-                lastCheckedDate: '2026-09-28'
-              };
-            }
-          }
-          return assumption;
-        });
+    const next = decisions.map((decision) => {
+      let firstContradiction: { assumption: Assumption; finding: AssumptionCheckFinding } | null = null;
 
-        if (decisionHasContradiction) {
-          modified = true;
-          const staleAnalysis: StaleAnalysis = {
-            originalReason: 'Vendor B was selected because it was 20% cheaper than Vendor A ($10.00 vs $12.50/unit) with 2-day delivery SLA.',
-            originalDate: '2024-03-12',
-            originalSourceId: 'D2',
-            newEvidence: contradictedAssumptionQuote || 'Vendor B invoice INV-2026-0912 dated 2026-09-28: 8,000 units at $13.40/unit (Total: $107,200.00).',
-            newDate: '2026-09-28',
-            newSourceTitle: 'Vendor B invoice INV-2026-0912',
-            monthlyCost: monthlyImpact || 4800,
-            confidence: 'High',
-            suggestedAction: 'Review vendor choice',
-            reviewStatus: 'pending'
-          };
-
-          const updatedDec: Decision = {
-            ...decision,
-            status: 'Stale' as const,
-            assumptions: updatedAssumptions,
-            staleAnalysis
-          };
-          staleDec = updatedDec;
-          return updatedDec;
+      const updatedAssumptions = decision.assumptions.map((assumption) => {
+        const finding = findings.find((f) => f.assumptionId === assumption.id);
+        if (!finding || finding.verdict === 'unrelated') return assumption;
+        const evidence = finding.evidenceQuote ? `${fileName}: "${finding.evidenceQuote}"` : finding.explanation;
+        if (finding.verdict === 'contradicted') {
+          if (!firstContradiction) firstContradiction = { assumption, finding };
+          return { ...assumption, status: 'Stale' as const, latestEvidence: evidence, lastCheckedDate: checkedOn };
         }
-
-        return decision;
+        return { ...assumption, status: 'Valid' as const, latestEvidence: evidence, lastCheckedDate: checkedOn };
       });
 
-      return next;
+      if (!firstContradiction) {
+        return { ...decision, assumptions: updatedAssumptions };
+      }
+
+      const { assumption, finding } = firstContradiction as { assumption: Assumption; finding: AssumptionCheckFinding };
+      // The monthly cost belongs to one decision so totals are never double counted
+      const monthlyCost = !costAssigned ? Math.max(0, result.monthlyImpact || 0) : 0;
+      if (monthlyCost > 0) costAssigned = true;
+
+      const staleAnalysis: StaleAnalysis = {
+        originalReason: assumption.originalReason,
+        originalDate: decision.date,
+        originalSourceId: assumption.sourceDocId,
+        newEvidence: finding.evidenceQuote || finding.explanation,
+        newDate: checkedOn,
+        newSourceTitle: fileName,
+        newSourceDocId: newDocId,
+        monthlyCost,
+        confidence: finding.confidence,
+        suggestedAction: 'Review this decision',
+        reviewStatus: 'pending',
+        assumptionText: assumption.text,
+        explanation: finding.explanation,
+        costFormula: monthlyCost > 0 ? result.costFormula : undefined,
+        comparison: isDemoInvoice && decision.id === 'dec-vendor-b' ? 'vendor-b-invoice' : undefined
+      };
+
+      const updated: Decision = {
+        ...decision,
+        status: 'Stale' as const,
+        assumptions: updatedAssumptions,
+        staleAnalysis
+      };
+      staleDecisions.push(updated);
+      return updated;
     });
 
-    if (modified && staleDec) {
-      setHeroStaleDecision(staleDec);
+    setDecisions(next);
+    void logWorkspaceEvent('document_audited', {
+      fileName,
+      status: result.status,
+      monthlyImpact: result.monthlyImpact,
+      findings,
+      staleDecisions: staleDecisions.map((d) => d.title)
+    });
+
+    const staleTotal = staleDecisions.length;
+    setActivityFeed((prev) => [
+      ...(staleTotal > 0
+        ? [{
+            id: `act-${Date.now()}-1`,
+            text: `${staleTotal} decision${staleTotal > 1 ? 's' : ''} went stale: ${staleDecisions.map((d) => d.title).join(', ')}`,
+            timestamp: 'Just now',
+            type: 'stale' as const
+          }]
+        : []),
+      {
+        id: `act-${Date.now()}-2`,
+        text: `${fileName} checked against company memory`,
+        timestamp: 'Just now',
+        type: 'check' as const
+      },
+      ...prev
+    ]);
+
+    if (staleTotal > 0) {
+      setHeroStaleDecision(staleDecisions[0]);
       setIsStaleHeroActive(true);
-
-      // Append live activity feed entries
-      setActivityFeed((prev) => [
-        {
-          id: `act-${Date.now()}-1`,
-          text: '1 decision went stale (Vendor B rate exceeded quote)',
-          timestamp: 'Just now',
-          type: 'stale'
-        },
-        {
-          id: `act-${Date.now()}-2`,
-          text: `Invoice ${fileName.replace('.pdf', '')} checked against memory`,
-          timestamp: 'Just now',
-          type: 'check'
-        },
-        ...prev
-      ]);
-
       addToast({
         type: 'error',
-        title: '1 decision went stale',
-        description: 'Vendor B unit price ($13.40/unit) exceeds Vendor A quote ($12.80/unit).'
+        title: `${staleTotal} decision${staleTotal > 1 ? 's' : ''} went stale`,
+        description: staleDecisions[0].staleAnalysis?.explanation || staleDecisions[0].title
       });
     }
+  };
+
+  const addCapturedDecision = (extracted: ExtractedDecision, sourceText: string): Decision => {
+    clearAskCache();
+    const capturedOn = today();
+    const docId = `C${documents.filter((d) => d.id.startsWith('C')).length + 1}`;
+    const decisionId = `dec-captured-${Date.now()}`;
+    const title = extracted.title || 'Captured decision';
+    const date = extracted.date || capturedOn;
+
+    const doc: LoreDocument = {
+      id: docId,
+      title: `Captured note: ${title}`,
+      date,
+      author: extracted.lead || 'Captured note',
+      type: 'memo',
+      content: sourceText,
+      snippet: extracted.summary || sourceText.slice(0, 160)
+    };
+
+    const decision: Decision = {
+      id: decisionId,
+      title,
+      date,
+      lead: extracted.lead || 'Not stated',
+      summary: extracted.summary || '',
+      status: 'Valid',
+      reasons: (extracted.reasons || []).map((r) => ({ text: r.text, sourceDocId: docId, sourceSnippet: r.quote })),
+      assumptions: (extracted.assumptions || []).map((a, i) => ({
+        id: `${decisionId}-a${i + 1}`,
+        decisionId,
+        text: a.text,
+        status: 'Valid' as const,
+        sourceDocId: docId,
+        originalReason: a.quote,
+        latestEvidence: 'No contradicting evidence since it was captured.',
+        lastCheckedDate: capturedOn
+      })),
+      options: (extracted.options || []).map((o) => ({
+        name: o.name,
+        accepted: o.accepted,
+        details: o.reason,
+        rejectionReason: o.accepted ? undefined : o.reason
+      })),
+      sourceDocIds: [docId]
+    };
+
+    setDocuments((prev) => [...prev, doc]);
+    setDecisions((prev) => [decision, ...prev]);
+    void logWorkspaceEvent('decision_captured', { decision, sourceText });
+    setActivityFeed((prev) => [
+      {
+        id: `act-${Date.now()}`,
+        text: `Decision captured: ${title} (${decision.assumptions.length} assumptions now watched)`,
+        timestamp: 'Just now',
+        type: 'decision'
+      },
+      ...prev
+    ]);
+    addToast({
+      type: 'success',
+      title: 'Decision captured',
+      description: `Mnemo now watches ${decision.assumptions.length} assumption${decision.assumptions.length === 1 ? '' : 's'} behind "${title}".`
+    });
+    return decision;
   };
 
   const staleCount = decisions.filter((d) => d.status === 'Stale').length;
@@ -428,6 +527,7 @@ export const LoreProvider: React.FC<{ children: React.ReactNode }> = ({ children
         cancelRunningRequests,
         updateDecisionReviewStatus,
         applyAssumptionExpiry,
+        addCapturedDecision,
         isStaleHeroActive,
         setIsStaleHeroActive,
         heroStaleDecision,

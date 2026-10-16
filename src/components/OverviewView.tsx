@@ -143,10 +143,13 @@ export const OverviewView: React.FC<OverviewViewProps> = ({ onAskQuery }) => {
                 {word}
               </span>
             ))}
-            <span className="font-serif italic text-[#3D8D7A] draw-underline inline-block">
-              why
+            {/* "why." stays on one line so the period never wraps alone */}
+            <span className="whitespace-nowrap">
+              <span className="font-serif italic text-[#3D8D7A] draw-underline inline-block">
+                why
+              </span>
+              <span className="text-[#12332B]">.</span>
             </span>
-            <span className="text-[#12332B]">.</span>
           </h1>
 
           <p className="text-[#3F5A52] text-[17px] leading-relaxed max-w-2xl mx-auto">

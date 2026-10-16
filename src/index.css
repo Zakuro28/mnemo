@@ -55,7 +55,9 @@
 }
 
 @media (hover: hover) {
-  .mnemo-card:hover {
+  /* Only clickable cards lift; large reading panels stay still */
+  .mnemo-card.cursor-pointer:hover,
+  button.mnemo-card:hover {
     transform: translateY(-3px);
     box-shadow: 0 16px 36px rgba(18, 51, 43, 0.09);
     border-color: #D3DDD9;
@@ -216,7 +218,8 @@
 }
 
 .pulse-ring-stale-terracotta {
-  animation: stalePulseTerracotta 1.6s cubic-bezier(0.23, 1, 0.32, 1) infinite;
+  /* Draws attention three times, then rests */
+  animation: stalePulseTerracotta 1.6s cubic-bezier(0.23, 1, 0.32, 1) 3;
 }
 
 /* Rotating conic shimmer border for Stale Card (pure transform: rotate) */
